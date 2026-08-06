@@ -1,0 +1,21 @@
+# 認証情報。絶対にコミットしない
+.env
+
+# ログ・一時ファイル（ドキュメントルート外だがリポジトリにも入れない）
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/tmp/*
+!/storage/tmp/.gitkeep
+
+# キュー処理の多重起動防止用ロックファイル
+*.lock
+
+# アップロード画像の実体は img.autobest.jp 側に置く
+/public/uploads/
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

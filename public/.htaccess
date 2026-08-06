@@ -1,0 +1,32 @@
+# =============================================================================
+# public/ 直下。ここがサブドメイン bot.autobest.jp のドキュメントルートになる。
+#
+# 前提：src/ config/ bin/ sql/ storage/ はこの1つ上にあり、Webから到達できない。
+# この .htaccess は「万一 public/ の中に置いてしまったもの」への保険。
+# =============================================================================
+
+# ディレクトリ一覧の抑止（画像やアップロード先の中身を見せない）
+Options -Indexes
+
+# .env や .git など、ドット始まりのファイルへのアクセスを拒否
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# 設定ファイル・SQL・ログが誤って置かれても配信しない
+<FilesMatch "\.(env|ini|log|sql|md|sh|lock)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    # MIMEスニッフィングとクリックジャッキングの抑止
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# PHPのバージョンやエラー内容が外に出ないようにする
+<IfModule mod_php.c>
+    php_flag display_errors Off
+    php_flag expose_php Off
+</IfModule>
