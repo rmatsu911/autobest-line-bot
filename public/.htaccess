@@ -7,6 +7,7 @@
 
 # ディレクトリ一覧の抑止（画像やアップロード先の中身を見せない）
 Options -Indexes
+DirectoryIndex index.php
 
 # .env や .git など、ドット始まりのファイルへのアクセスを拒否
 <FilesMatch "^\.">

@@ -271,6 +271,23 @@ final class WebhookHandler
      */
     private function upsertUser(string $lineUserId, ?string $displayName): void
     {
+        if (Db::isSqlite()) {
+            Db::exec(
+                "INSERT INTO line_users (line_user_id, display_name, followed_at, blocked)
+                 VALUES (:line_user_id, :display_name, " . Db::nowSql() . ", 0)
+                 ON CONFLICT(line_user_id) DO UPDATE SET
+                    blocked = 0,
+                    display_name = COALESCE(excluded.display_name, line_users.display_name),
+                    followed_at = COALESCE(line_users.followed_at, " . Db::nowSql() . "),
+                    updated_at = " . Db::nowSql(),
+                [
+                    ':line_user_id' => $lineUserId,
+                    ':display_name' => $displayName,
+                ]
+            );
+            return;
+        }
+
         Db::exec(
             'INSERT INTO line_users (line_user_id, display_name, followed_at, blocked)
              VALUES (:line_user_id, :display_name, NOW(), 0)
@@ -297,6 +314,14 @@ final class WebhookHandler
      */
     private function markEventSeen(string $eventId, string $type): bool
     {
+        if (Db::isSqlite()) {
+            $affected = Db::exec(
+                'INSERT OR IGNORE INTO webhook_events (event_id, event_type) VALUES (?, ?)',
+                [$eventId, $type !== '' ? $type : null]
+            );
+            return $affected > 0;
+        }
+
         $affected = Db::exec(
             'INSERT IGNORE INTO webhook_events (event_id, event_type) VALUES (?, ?)',
             [$eventId, $type !== '' ? $type : null]

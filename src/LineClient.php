@@ -13,12 +13,17 @@ namespace App;
 /** API 応答をまとめた値オブジェクト */
 final class LineResponse
 {
-    public function __construct(
-        public readonly int $status,
-        public readonly ?array $json,
-        public readonly string $body,
-        public readonly ?string $error = null,
-    ) {
+    public int $status;
+    public ?array $json;
+    public string $body;
+    public ?string $error;
+
+    public function __construct(int $status, ?array $json, string $body, ?string $error = null)
+    {
+        $this->status = $status;
+        $this->json = $json;
+        $this->body = $body;
+        $this->error = $error;
     }
 
     public function ok(): bool

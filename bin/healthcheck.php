@@ -46,18 +46,22 @@ echo PHP_EOL . '=== autobest.jp LINE bot ヘルスチェック ===' . PHP_EOL . 
 // -----------------------------------------------------------------------------
 echo '1. 実行環境' . PHP_EOL;
 // -----------------------------------------------------------------------------
-version_compare(PHP_VERSION, '8.2.0', '>=')
+version_compare(PHP_VERSION, '8.0.0', '>=')
     ? ok('PHPバージョン', PHP_VERSION)
-    : ng('PHPバージョン', PHP_VERSION . ' （8.2以上が必要）');
+    : ng('PHPバージョン', PHP_VERSION . ' （8.0以上が必要）');
 
-foreach (['curl', 'pdo_mysql', 'mbstring', 'json'] as $ext) {
+$dbDriver = strtolower(Config::get('DB_DRIVER', 'mysql'));
+$requiredExtensions = ['curl', 'mbstring', 'json', $dbDriver === 'sqlite' ? 'pdo_sqlite' : 'pdo_mysql'];
+foreach ($requiredExtensions as $ext) {
     extension_loaded($ext) ? ok("拡張 {$ext}") : ng("拡張 {$ext}", '未ロード');
 }
 
 // -----------------------------------------------------------------------------
 echo PHP_EOL . '2. 設定（.env）' . PHP_EOL;
 // -----------------------------------------------------------------------------
-$required = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS', 'LINE_CHANNEL_SECRET', 'LINE_CHANNEL_ACCESS_TOKEN'];
+$required = $dbDriver === 'sqlite'
+    ? ['DB_DRIVER', 'DB_PATH', 'LINE_CHANNEL_SECRET', 'LINE_CHANNEL_ACCESS_TOKEN']
+    : ['DB_DRIVER', 'DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS', 'LINE_CHANNEL_SECRET', 'LINE_CHANNEL_ACCESS_TOKEN'];
 foreach ($required as $key) {
     $value = Config::get($key, '');
     $value !== ''
@@ -65,7 +69,7 @@ foreach ($required as $key) {
         : ng($key, '未設定');
 }
 
-if (Config::get('DB_HOST', '') === 'localhost') {
+if ($dbDriver !== 'sqlite' && Config::get('DB_HOST', '') === 'localhost') {
     ng('DB_HOST', 'Xserverでは localhost は使えません。mysqlXXX.xserver.jp を指定してください');
 }
 
@@ -77,18 +81,20 @@ is_writable($logDir) ? ok('ログディレクトリ', $logDir) : ng('ログデ�
 echo PHP_EOL . '3. データベース' . PHP_EOL;
 // -----------------------------------------------------------------------------
 try {
-    $row = Db::one('SELECT VERSION() AS v, @@character_set_database AS cs, NOW() AS now_at');
-    ok('接続', 'MySQL ' . ($row['v'] ?? '?') . ' / charset=' . ($row['cs'] ?? '?') . ' / NOW()=' . ($row['now_at'] ?? '?'));
+    if (Db::isSqlite()) {
+        $row = Db::one("SELECT sqlite_version() AS v, " . Db::nowSql() . " AS now_at");
+        ok('接続', 'SQLite ' . ($row['v'] ?? '?') . ' / now=' . ($row['now_at'] ?? '?') . ' / path=' . Db::sqlitePath());
+    } else {
+        $row = Db::one('SELECT VERSION() AS v, @@character_set_database AS cs, NOW() AS now_at');
+        ok('接続', 'MySQL ' . ($row['v'] ?? '?') . ' / charset=' . ($row['cs'] ?? '?') . ' / NOW()=' . ($row['now_at'] ?? '?'));
 
-    if (($row['cs'] ?? '') !== 'utf8mb4') {
-        ng('文字コード', 'utf8mb4 ではありません（' . ($row['cs'] ?? '?') . '）');
+        if (($row['cs'] ?? '') !== 'utf8mb4') {
+            ng('文字コード', 'utf8mb4 ではありません（' . ($row['cs'] ?? '?') . '）');
+        }
     }
 
     $expected = ['line_users', 'cars', 'car_images', 'purchase_records', 'inquiries', 'message_queue', 'webhook_events', 'admin_users'];
-    $existing = array_column(
-        Db::all('SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE()'),
-        't'
-    );
+    $existing = Db::tableNames();
     foreach ($expected as $table) {
         in_array($table, $existing, true)
             ? ok("テーブル {$table}")

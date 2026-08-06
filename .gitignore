@@ -6,9 +6,12 @@
 !/storage/logs/.gitkeep
 /storage/tmp/*
 !/storage/tmp/.gitkeep
+/storage/*.sqlite
+/storage/*.sqlite-*
 
 # キュー処理の多重起動防止用ロックファイル
 *.lock
+*.tar.gz
 
 # アップロード画像の実体は img.autobest.jp 側に置く
 /public/uploads/

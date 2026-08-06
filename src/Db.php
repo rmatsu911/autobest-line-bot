@@ -16,6 +16,7 @@ use PDOException;
 final class Db
 {
     private static ?PDO $pdo = null;
+    private static ?string $driver = null;
 
     public static function conn(): PDO
     {
@@ -23,15 +24,10 @@ final class Db
             return self::$pdo;
         }
 
-        $dsn = sprintf(
-            'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
-            Config::get('DB_HOST'),
-            Config::getInt('DB_PORT', 3306),
-            Config::get('DB_NAME')
-        );
+        self::$driver = strtolower(Config::get('DB_DRIVER', 'mysql'));
 
         try {
-            self::$pdo = new PDO($dsn, Config::get('DB_USER'), Config::get('DB_PASS'), [
+            $options = [
                 // 例外で落とす。既定の SILENT だと execute() の失敗に気づかず
                 // 「保存できていないのに成功扱い」になる事故が起きる。
                 PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
@@ -43,7 +39,28 @@ final class Db
                 // LIMIT ? に整数を渡せるようにする（エミュレーション off の副作用対策）。
                 PDO::ATTR_STRINGIFY_FETCHES  => false,
                 PDO::ATTR_PERSISTENT         => false,
-            ]);
+            ];
+
+            if (self::isSqlite()) {
+                $path = self::sqlitePath();
+                $dir = dirname($path);
+                if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+                    throw new PDOException('SQLite DBディレクトリを作成できません: ' . $dir);
+                }
+                self::$pdo = new PDO('sqlite:' . $path, null, null, $options);
+                self::$pdo->exec('PRAGMA foreign_keys = ON');
+                self::$pdo->exec('PRAGMA busy_timeout = 5000');
+                return self::$pdo;
+            }
+
+            $dsn = sprintf(
+                'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+                Config::get('DB_HOST'),
+                Config::getInt('DB_PORT', 3306),
+                Config::get('DB_NAME')
+            );
+
+            self::$pdo = new PDO($dsn, Config::get('DB_USER'), Config::get('DB_PASS'), $options);
 
             // PHP 側は Asia/Tokyo。MySQL のセッションも +09:00 に合わせ、
             // NOW() と date() がずれないようにする（共用サーバーは UTC のことがある）。
@@ -59,6 +76,46 @@ final class Db
         }
 
         return self::$pdo;
+    }
+
+    public static function driver(): string
+    {
+        return self::$driver ?? strtolower(Config::get('DB_DRIVER', 'mysql'));
+    }
+
+    public static function isSqlite(): bool
+    {
+        return self::driver() === 'sqlite';
+    }
+
+    public static function nowSql(): string
+    {
+        return self::isSqlite() ? "datetime('now', '+9 hours')" : 'NOW()';
+    }
+
+    public static function sqlitePath(): string
+    {
+        $path = Config::get('DB_PATH', 'storage/autobest.sqlite');
+        if (preg_match('/\A[A-Za-z]:[\\\\\/]/', $path) === 1 || str_starts_with($path, '/')) {
+            return $path;
+        }
+        return APP_ROOT . '/' . ltrim($path, '/\\');
+    }
+
+    /** @return array<int,string> */
+    public static function tableNames(): array
+    {
+        if (self::isSqlite()) {
+            return array_column(
+                self::all("SELECT name AS t FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"),
+                't'
+            );
+        }
+
+        return array_column(
+            self::all('SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE()'),
+            't'
+        );
     }
 
     /** SELECT で複数行取得 */

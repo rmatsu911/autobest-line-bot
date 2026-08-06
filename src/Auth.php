@@ -114,7 +114,7 @@ final class Auth
         }
 
         Db::exec(
-            'UPDATE admin_users SET last_login_at = NOW(), failed_attempts = 0, locked_until = NULL WHERE id = ?',
+            'UPDATE admin_users SET last_login_at = ' . Db::nowSql() . ', failed_attempts = 0, locked_until = NULL WHERE id = ?',
             [(int) $user['id']]
         );
         Logger::info('管理画面にログインしました', ['login_id' => $loginId]);
@@ -126,9 +126,10 @@ final class Auth
     {
         $next = $current + 1;
         if ($next >= self::MAX_ATTEMPTS) {
+            $lockedUntil = date('Y-m-d H:i:s', time() + self::LOCK_MINUTES * 60);
             Db::exec(
-                'UPDATE admin_users SET failed_attempts = ?, locked_until = DATE_ADD(NOW(), INTERVAL ? MINUTE) WHERE id = ?',
-                [$next, self::LOCK_MINUTES, $userId]
+                'UPDATE admin_users SET failed_attempts = ?, locked_until = ? WHERE id = ?',
+                [$next, $lockedUntil, $userId]
             );
             Logger::warning('ログイン試行回数の上限に達したためロックしました', ['admin_id' => $userId]);
             return;
