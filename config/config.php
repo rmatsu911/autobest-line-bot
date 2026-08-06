@@ -147,6 +147,9 @@ spl_autoload_register(static function (string $class): void {
     }
 });
 
+// テンプレート用ヘルパ（h() など）。オートロードできない素の関数なので明示的に読む。
+require_once APP_ROOT . '/config/helpers.php';
+
 // -----------------------------------------------------------------------------
 // 3) タイムゾーン
 //    DATETIME を NOW() で入れるため、PHPとMySQLの時刻感覚を JST に揃える。

@@ -159,14 +159,18 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 --   password_hash は password_hash() の出力をそのまま入れる。平文は保存しない。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS admin_users (
-  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  login_id      VARCHAR(64)     NOT NULL,
-  password_hash VARCHAR(255)    NOT NULL,
-  display_name  VARCHAR(128)        NULL,
-  is_active     TINYINT(1)      NOT NULL DEFAULT 1,
-  last_login_at DATETIME            NULL,
-  created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  login_id        VARCHAR(64)     NOT NULL,
+  password_hash   VARCHAR(255)    NOT NULL COMMENT 'password_hash() の出力。平文は保存しない',
+  display_name    VARCHAR(128)        NULL,
+  is_active       TINYINT(1)      NOT NULL DEFAULT 1,
+  -- 総当たり対策。.htaccess の Basic認証・IP制限が第一の壁だが、
+  -- そこを通過された場合に備えてアプリ側でも試行回数を数える。
+  failed_attempts INT UNSIGNED    NOT NULL DEFAULT 0,
+  locked_until    DATETIME            NULL COMMENT 'この時刻まではログインを受け付けない',
+  last_login_at   DATETIME            NULL,
+  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_admin_users_login_id (login_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

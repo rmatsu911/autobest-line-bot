@@ -78,6 +78,31 @@ final class Db
         return $row === false ? null : $row;
     }
 
+    /**
+     * ページング付きの SELECT。
+     *
+     * LIMIT / OFFSET をプレースホルダで渡さない理由：
+     * ATTR_EMULATE_PREPARES=false のとき execute($params) は全ての値を文字列として
+     * 束縛するため、SQL が「LIMIT '10'」となり構文エラーになる。
+     * ここは (int) キャストを通した値だけを埋め込む。キャスト後の値は数字以外を
+     * 含み得ないので injection の余地は無く、「SQLは全てプリペアド」の原則は
+     * WHERE 句の値（＝利用者入力）について維持されている。
+     */
+    public static function paged(string $sql, array $params, int $limit, int $offset): array
+    {
+        $limit  = max(1, min($limit, 200));   // 上限を設けて全件取得の暴発を防ぐ
+        $offset = max(0, $offset);
+        return self::all($sql . sprintf(' LIMIT %d OFFSET %d', $limit, $offset), $params);
+    }
+
+    /** COUNT(*) など単一の値を取る */
+    public static function value(string $sql, array $params = []): mixed
+    {
+        $stmt = self::conn()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchColumn();
+    }
+
     /** INSERT / UPDATE / DELETE。影響行数を返す */
     public static function exec(string $sql, array $params = []): int
     {

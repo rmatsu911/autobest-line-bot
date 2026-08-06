@@ -1,0 +1,43 @@
+# =============================================================================
+# 管理画面の追加防御。
+#
+# アプリ側にもログイン認証はあるが、ここで一段先に止めることで
+# ログインフォーム自体を外部から見せない。
+# =============================================================================
+
+# --- Basic認証 -----------------------------------------------------------
+# .htpasswd はドキュメントルートの外に置く。フルパスは設置時に書き換える。
+#   htpasswd -c /home/xsvacct/apps/autobest-line-bot/.htpasswd owner
+# 作成後、下の3行のコメントを外す。
+#
+# AuthType Basic
+# AuthName "autobest admin"
+# AuthUserFile /home/xsvacct/apps/autobest-line-bot/.htpasswd
+# Require valid-user
+
+# --- 接続元IPの制限 ------------------------------------------------------
+# 店舗の固定IPが分かっている場合のみ有効にする。
+# 有効にしたまま外出先から繋ぐと自分も入れなくなるので注意。
+#
+# <RequireAll>
+#     Require valid-user
+#     Require ip 203.0.113.10
+# </RequireAll>
+
+# --- 共通 ----------------------------------------------------------------
+Options -Indexes
+
+# _layout.php のような部品ファイルは直接開かせない
+<FilesMatch "^_">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    # 管理画面を検索エンジンに載せない
+    Header always set X-Robots-Tag "noindex, nofollow"
+    # 管理画面は他サイトに埋め込ませない（クリックジャッキング対策）
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    # ブラウザにキャッシュを残さない（共用PCでの戻るボタン対策）
+    Header always set Cache-Control "no-store, no-cache, must-revalidate"
+</IfModule>
