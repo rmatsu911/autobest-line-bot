@@ -109,7 +109,7 @@ final class Config
      * Web から来た場合は display_errors=0 のまま未捕捉となり、
      * 本文を出さずに 500 になる（原因が外に漏れない）。
      */
-    private static function fail(string $reason): void
+    private static function fail(string $reason): never
     {
         throw new \RuntimeException($reason);
     }
