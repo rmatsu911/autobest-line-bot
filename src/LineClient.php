@@ -111,6 +111,44 @@ final class LineClient
     }
 
     // -------------------------------------------------------------------------
+    // チャネル設定（bin/set_webhook.php から使う）
+    // -------------------------------------------------------------------------
+
+    /**
+     * Botの基本情報。どのLINE公式アカウントのトークンなのかを確認するために使う。
+     * displayName で「抽選」なのか「AUTOBEST」なのかを見分けられる。
+     */
+    public function botInfo(): ?array
+    {
+        $res = $this->request('GET', '/v2/bot/info');
+        return $res->ok() ? $res->json : null;
+    }
+
+    /** 現在登録されているWebhook URLを取得する */
+    public function getWebhookEndpoint(): LineResponse
+    {
+        return $this->request('GET', '/v2/bot/channel/webhook/endpoint');
+    }
+
+    /**
+     * Webhook URLを差し替える。
+     * LINE Developers の画面で入力するのと同じ操作を API から行う。
+     */
+    public function setWebhookEndpoint(string $url): LineResponse
+    {
+        return $this->request('PUT', '/v2/bot/channel/webhook/endpoint', ['endpoint' => $url]);
+    }
+
+    /**
+     * LINE 側から実際にWebhookへ疎通させる。
+     * 応答コードと理由が返るので、WAF や SSL の問題を設置直後に切り分けられる。
+     */
+    public function testWebhookEndpoint(?string $url = null): LineResponse
+    {
+        return $this->request('POST', '/v2/bot/channel/webhook/test', $url === null ? [] : ['endpoint' => $url]);
+    }
+
+    // -------------------------------------------------------------------------
     // リッチメニュー（フェーズ3の bin/setup_richmenu.php から使う）
     // -------------------------------------------------------------------------
 
