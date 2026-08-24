@@ -6,6 +6,11 @@
 !/storage/logs/.gitkeep
 /storage/tmp/*
 !/storage/tmp/.gitkeep
+
+# 査定申込の写真（お客様の個人情報）。実体は絶対にコミットしない
+/storage/assessments/*
+!/storage/assessments/.gitkeep
+!/storage/assessments/.htaccess
 /storage/*.sqlite
 /storage/*.sqlite-*
 

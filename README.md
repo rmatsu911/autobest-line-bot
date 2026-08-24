@@ -22,7 +22,7 @@
 | 1 | `schema.sql` / `Db` / `Signature` / `LineClient` / `webhook.php`（follow・単純なtext応答） | **完了** |
 | 2 | 管理画面の在庫CRUD＋画像アップロード | **完了** |
 | 3 | `FlexBuilder` と在庫カルーセル、リッチメニュー登録スクリプト | **完了** |
-| 4 | 査定申込LIFF＋問い合わせ管理 | 未着手 |
+| 4 | 査定申込・来店予約フォーム＋問い合わせ管理（担当者・対応履歴・写真）＋操作履歴 | **完了**（LIFF連携は保留） |
 | 5 | cronバッチ（キュー処理・一斉配信） | 未着手 |
 
 ### 確定している前提
@@ -89,8 +89,11 @@ autobest-line-bot/
 │   ├── config.php            # .env読み込み・オートローダ・エラー設定
 │   └── helpers.php           # h() などテンプレート用ヘルパ
 ├── sql/
-│   └── schema.sql
-└── storage/logs/             # ログ（Webから到達できない場所）
+│   ├── schema.sql
+│   └── migrations/           # 既存DBへ差分を当てる（bin/migrate.php）
+└── storage/
+    ├── logs/                 # ログ（Webから到達できない場所）
+    └── assessments/          # 査定申込の写真（個人情報。公開領域には置かない）
 ```
 
 `public/` 以外はドキュメントルートの外に置く。設置方法は次章のとおり。
@@ -592,7 +595,205 @@ SELECT u.display_name, c.model_name FROM favorites f
 
 ---
 
+---
+
+## フェーズ4：査定申込・来店予約フォームと問い合わせ管理
+
+LINEログインチャネルがまだ無いため、**LIFFは使わず素のWebページ**で作った。
+`.env` に `LINE_LOGIN_CHANNEL_ID` を入れると `src/LiffBridge.php` が自動的に効き始め、
+LINEから開いた申込に `line_users` が紐づくようになる（それまでは連絡先だけの申込として保存）。
+
+素のページにした利点は3つ。
+
+- LINE側の設定を待たずに今日から申込を受けられる
+- 店頭のQRコード、Webサイト、電話案内からも同じURLが使える
+- LINE内ブラウザの制約（LIFF SDKの読み込み失敗）で申込を取りこぼさない
+
+### スキーマの更新
+
+```bash
+cd ~/apps/autobest-line-bot
+cp storage/autobest.sqlite storage/autobest.sqlite.bak   # SQLite運用の場合
+# MySQL運用の場合： mysqldump -h mysqlXXX.xserver.jp -u ユーザ -p DB名 > backup.sql
+
+php bin/migrate.php            # 未適用の一覧を見るだけ
+php bin/migrate.php --apply    # 適用する
+php bin/healthcheck.php        # 追加テーブルまで揃っているか確認
+```
+
+`002_phase4` が追加するもの。
+
+| 追加 | 目的 |
+|---|---|
+| `inquiries.line_user_id` を NULL 可に | LINEを経由しないWebフォームからの申込を受けるため |
+| `inquiries.source` / `contact_name` / `contact_tel` / `contact_email` / `contact_pref` | 連絡先と申込経路 |
+| `inquiries.assigned_admin_id` | 担当者 |
+| `reservations` にも同じ連絡先列と `purpose`（来店/オンライン相談） | 同上 |
+| `inquiry_notes` | 対応履歴（電話した・見積を送った） |
+| `inquiry_images` | 査定写真（ファイル名だけ。実体はDBの外） |
+| `audit_logs` | 誰がいつ何を変えたかの証跡 |
+
+`line_user_id` のFKは `CASCADE` から `SET NULL` に変えている。
+LINEユーザーの行を消しても問い合わせ履歴は残す（トラブル対応で「言った・言わない」を確認できなくなるため）。
+
+SQLite版は列の NULL 可・CHECK制約を後から変えられないので、
+`inquiries` と `reservations` を作り直して詰め替えている（フェーズ3で `cars` にやったのと同じ手）。
+
+### 追加のURL
+
+| URL | 用途 |
+|---|---|
+| `/assessment.php` | 無料査定の申込フォーム |
+| `/reserve.php?car_id=…` | 来店・商談予約フォーム（`car_id` は任意） |
+| `/admin/inquiry.php?id=…` | 問い合わせの詳細・担当者・対応履歴・写真 |
+| `/admin/inquiry_image.php?id=…` | 査定写真の配信（ログイン必須） |
+| `/admin/reservations.php` | 予約管理（日時の確定・担当者・状態） |
+| `/admin/audit.php` | 操作履歴 |
+
+リッチメニューやトーク内のボタンからは `BOT_BASE_URL` を基準にこのURLを組み立てる。
+設置場所がサブディレクトリの場合は `.env` の `BOT_BASE_URL` を実際のURLに合わせること
+（例：`BOT_BASE_URL=https://xxxxx.xsrv.jp/auto-beast`）。
+
+### 査定写真の置き場所
+
+在庫写真（`car_images`）と違い、**査定写真はお客様の車の写真＝個人情報**なので
+`img.autobest.jp` には置かない。
+
+```
+storage/assessments/{問い合わせID}/{乱数32桁}.jpg   ← 実体（パーミッション 600）
+inquiry_images.file_name                            ← DBにはファイル名だけ
+public/admin/inquiry_image.php                      ← 唯一の配信口（ログイン必須）
+```
+
+- DBにパスもURLも持たせない（`../` を混ぜ込む余地をなくす）
+- 未ログインは 403 ではなく **404**（そこに何かある、と教えない）
+- 問い合わせを削除すると実体も消える（消し忘れて個人情報が残り続けるのを防ぐ）
+- `storage/.htaccess` で全面拒否。サブディレクトリ設置で `storage/` がURLで叩ける形になっても配信させない
+
+設置後、**必ず外から確認すること**（403か404が返れば正しい）。
+
+```bash
+curl -i https://<設置先>/storage/assessments/
+curl -i https://<設置先>/storage/autobest.sqlite
+```
+
+### 迷惑送信への構え
+
+公開フォームには誰でも投稿できるので、防御を3枚重ねている（`src/PublicForm.php`）。
+
+| 仕組み | 内容 |
+|---|---|
+| ハニーポット | 人には見えない入力欄。自動投稿は素直に埋めてくる |
+| 経過時間 | 表示から3秒未満／1時間超の送信を拒否（発行時刻はHMACで署名して改ざんを防ぐ） |
+| 連投制限 | 同じIPから1時間あたり5件まで（`audit_logs` の記録で数える） |
+
+CAPTCHAは入れていない。外部スクリプトを読み込むとXserverのWAFやLINE内ブラウザで
+表示が崩れることがあり、来店予約を取りこぼす方が損失が大きいと判断した。
+
+送信が通るとトークンを作り直すので、戻るボタンでの再送では二重に登録されない。
+
+### 動作確認（フェーズ4）
+
+```bash
+# 1) フォームが開くか（noindex が付いていること）
+curl -sI https://<設置先>/assessment.php | grep -i x-robots-tag
+
+# 2) トークン無しの送信が弾かれるか
+curl -s -X POST -d "contact_name=試験&contact_tel=09012345678&maker=ト&model_name=ハ" \
+     https://<設置先>/assessment.php | grep -o "送信内容を確認できませんでした"
+
+# 3) 写真置き場が外から読めないか（403 か 404 であること）
+curl -sI https://<設置先>/storage/assessments/ | head -1
+```
+
+実機では次の順で確認する。
+
+1. `/assessment.php` をスマホで開き、写真を2枚付けて送信 → 完了画面が出る
+2. 管理画面 → 問い合わせ → 新しい行が「未対応 / Webフォーム / 写真2枚」で並ぶ
+3. 詳細を開き、写真が表示される → 担当者を設定 → 対応履歴を1件追加
+   → 状態が自動で「対応中」に変わる
+4. `/reserve.php` から第1〜第2希望を入れて送信 → 予約画面に「仮予約」で並ぶ
+5. 「これで確定」を押す → 状態が「確定」になり、メモに確定日時が残る
+6. 操作履歴に 1〜5 の操作が並ぶ
+
+### フェーズ4で実装したこと
+
+#### 連絡先の入力規則（`src/ContactRules.php`）
+
+査定と予約で規則がずれないよう1か所にまとめた。ここで踏んだ落とし穴を2つ残しておく。
+
+**`trim()` の第2引数はバイト単位で削る。**
+全角スペース（U+3000 = `E3 80 80`）を削り文字に渡すと、「トヨタ」の先頭バイト `E3` まで
+一緒に削られて文字化けする。文字単位で扱うため `preg_replace('/…/u')` にした。
+
+**文字化けしたまま先へ進むと、申込内容が丸ごと消える。**
+壊れたUTF-8が1バイトでも混ざると `json_encode()` は `false` を返し、
+`payload` が空で保存される。入力の時点で直し、`json_encode` にも
+`JSON_INVALID_UTF8_SUBSTITUTE` と失敗時の退避を入れた。
+
+#### 希望日時の扱い（`src/ReservationValidator.php`）
+
+`<input type="datetime-local">` は `2026-09-01T11:00` を送ってくる。
+`strtotime()` に任せず形を固定して読む（`next monday` のような文字列を解釈させないため）。
+
+検証結果を返すとき **`$parsed + $v` の順序が要る**。PHPの `+` は左側を優先するので
+`$v + $parsed` にすると画面から来た生の文字列（`""` や `2026-09-01T11:00`）が残り、
+整形済みの値が捨てられる。空文字が DATETIME 列に届くと
+MySQLは 1292 で拒否し、SQLiteは黙って空文字を保存する（どちらも予約が壊れる）。
+
+#### セッションはHTMLを出す前に開始する（`public/assessment.php` 冒頭）
+
+`PublicForm::fields()` の中でセッションを開始すると、その時点ではもうヘッダを
+送り終えているため `Set-Cookie` が飛ばない。結果、**どの送信も必ず
+「送信内容を確認できませんでした」で弾かれる**。テストで最初に見つかった不具合がこれ。
+
+#### 操作の証跡（`src/AuditLog.php`）
+
+`storage/logs/` のテキストログとは別にDBへ持つ。管理画面から検索でき、
+ローテーションで消えず、対象（車両ID・問い合わせID）で引けるようにするため。
+
+- `admin_id` にFKを張らない。張ると管理者を消したときに証跡まで消える
+- 代わりに `admin_name` を文字列で焼き込む
+- 画面から削除する口を作っていない（消せる証跡は証跡ではない）
+- 記録に失敗しても本来の操作は続行する（証跡が残らないから在庫を公開できない、では業務が止まる）
+
+公開フォームからの送信も `admin_id` が NULL の記録として残るので、
+これを数えて連投制限にも使っている。
+
+---
+
 ## 次のフェーズに進む前に決めること
 
-フェーズ3（在庫カルーセル）の詳細表示の方式を決める必要がある。README冒頭の方針では
-「カードの『詳しく見る』→ 車両詳細ページ」を想定しているが、実装前に確認したい。
+フェーズ5（cronによるキュー処理・一斉配信）に入る前に、次の3点を決めたい。
+いずれも実装の形が変わるため、こちらの判断だけでは進められない。
+
+### 1) LINEの料金プラン（新着通知をやるかどうか）
+
+要件書5章の「条件に合う新着が入ったら通知」は、**push配信**なので無料プランの
+月200通をすぐに使い切る。友だち100人に月2回で400通になる。選択肢は3つ。
+
+- プランを上げる（ライトプラン：月5,000通）
+- 通知は諦め、「新着を見る」をお客様から押してもらう形にする（reply扱いで無料）
+- 通知対象を絞る（お気に入り登録者だけ、など）
+
+### 2) 在庫の共有API・お客様向けWebサイト（要件書10章）
+
+「在庫DBを共有し、Webサイトとbotの両方から参照する」と書かれているが、
+現状は**別リポジトリ・別DB・管理画面から手入力**で作っている（当初の合意どおり）。
+Webサイト側と在庫を共有するなら、どちらを正とするかを先に決める必要がある。
+
+### 3) LINEログインチャネル（LIFF連携）
+
+査定・予約フォームは素のWebページとして動いているので急がないが、
+LINEログインチャネルを作って `.env` に `LINE_LOGIN_CHANNEL_ID` を入れると、
+申込に「誰から」が自動で紐づき、その後の連絡をトークで返せるようになる。
+配線は `src/LiffBridge.php` に入れてあるので、値を入れるだけで有効になる。
+
+---
+
+## 設置後に必ずやること（未対応の分）
+
+- [ ] 管理画面のパスワードを12文字以上のものに変える（`php bin/create_admin.php`）
+- [ ] `public/admin/.htaccess` のBasic認証のコメントを外す
+- [ ] 外から `.env` / `src/` / `storage/` が読めないことを `curl -i` で確認する
+- [ ] `bin/richmenu/{find,sell,support}.png`（2500×1686）を用意して `php bin/setup_richmenu.php --apply`

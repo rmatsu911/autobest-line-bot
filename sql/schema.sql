@@ -32,6 +32,27 @@ CREATE TABLE IF NOT EXISTS line_users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
+-- admin_users : 管理画面のログインユーザー（フェーズ2で使用）
+--   password_hash は password_hash() の出力をそのまま入れる。平文は保存しない。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_users (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  login_id        VARCHAR(64)     NOT NULL,
+  password_hash   VARCHAR(255)    NOT NULL COMMENT 'password_hash() の出力。平文は保存しない',
+  display_name    VARCHAR(128)        NULL,
+  is_active       TINYINT(1)      NOT NULL DEFAULT 1,
+  -- 総当たり対策。.htaccess の Basic認証・IP制限が第一の壁だが、
+  -- そこを通過された場合に備えてアプリ側でも試行回数を数える。
+  failed_attempts INT UNSIGNED    NOT NULL DEFAULT 0,
+  locked_until    DATETIME            NULL COMMENT 'この時刻まではログインを受け付けない',
+  last_login_at   DATETIME            NULL,
+  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_admin_users_login_id (login_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
 -- cars : 販売在庫
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS cars (
@@ -112,23 +133,32 @@ CREATE TABLE IF NOT EXISTS purchase_records (
 -- inquiries : 問い合わせ（査定申込 / 在庫問い合わせ / 来店予約）
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS inquiries (
-  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  line_user_id BIGINT UNSIGNED NOT NULL COMMENT 'line_users.id へのFK（LINEのuserId文字列ではない）',
-  car_id       BIGINT UNSIGNED     NULL COMMENT '在庫問い合わせのときのみ',
-  kind         ENUM('assessment','car','visit') NOT NULL,
-  payload      JSON                NULL COMMENT '査定フォームの入力内容',
-  message      TEXT                NULL,
-  status       ENUM('new','in_progress','done') NOT NULL DEFAULT 'new',
-  created_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  line_user_id      BIGINT UNSIGNED     NULL COMMENT 'line_users.id へのFK。Webフォーム経由はNULL',
+  car_id            BIGINT UNSIGNED     NULL COMMENT '在庫問い合わせのときのみ',
+  kind              ENUM('assessment','car','visit') NOT NULL,
+  source            ENUM('line','web','liff') NOT NULL DEFAULT 'line',
+  contact_name      VARCHAR(64)         NULL,
+  contact_tel       VARCHAR(32)         NULL,
+  contact_email     VARCHAR(191)        NULL,
+  contact_pref      VARCHAR(64)         NULL COMMENT '連絡方法・時間帯の希望',
+  payload           JSON                NULL COMMENT '査定フォームの入力内容',
+  message           TEXT                NULL,
+  status            ENUM('new','in_progress','done') NOT NULL DEFAULT 'new',
+  assigned_admin_id BIGINT UNSIGNED     NULL,
+  created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   -- 管理画面の既定表示が「未対応を新しい順」なのでこの並びで張る。
   KEY idx_inquiries_status_created (status, created_at),
   KEY idx_inquiries_line_user (line_user_id),
   KEY idx_inquiries_car (car_id),
-  CONSTRAINT fk_inquiries_line_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
+  KEY idx_inquiries_assigned (assigned_admin_id, status),
+  -- LINEユーザーの行を消しても問い合わせ履歴は残す（トラブル対応で必要になる）。
+  CONSTRAINT fk_inquiries_line_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE SET NULL,
   -- 在庫を消しても問い合わせ履歴は残す（実績・トラブル対応のため）。よってFKはSET NULL。
-  CONSTRAINT fk_inquiries_car FOREIGN KEY (car_id) REFERENCES cars (id) ON DELETE SET NULL
+  CONSTRAINT fk_inquiries_car FOREIGN KEY (car_id) REFERENCES cars (id) ON DELETE SET NULL,
+  CONSTRAINT fk_inquiries_admin FOREIGN KEY (assigned_admin_id) REFERENCES admin_users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -168,26 +198,6 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   KEY idx_webhook_events_received (received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- -----------------------------------------------------------------------------
--- admin_users : 管理画面のログインユーザー（フェーズ2で使用）
---   password_hash は password_hash() の出力をそのまま入れる。平文は保存しない。
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS admin_users (
-  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  login_id        VARCHAR(64)     NOT NULL,
-  password_hash   VARCHAR(255)    NOT NULL COMMENT 'password_hash() の出力。平文は保存しない',
-  display_name    VARCHAR(128)        NULL,
-  is_active       TINYINT(1)      NOT NULL DEFAULT 1,
-  -- 総当たり対策。.htaccess の Basic認証・IP制限が第一の壁だが、
-  -- そこを通過された場合に備えてアプリ側でも試行回数を数える。
-  failed_attempts INT UNSIGNED    NOT NULL DEFAULT 0,
-  locked_until    DATETIME            NULL COMMENT 'この時刻まではログインを受け付けない',
-  last_login_at   DATETIME            NULL,
-  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_admin_users_login_id (login_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- -----------------------------------------------------------------------------
@@ -207,24 +217,32 @@ CREATE TABLE IF NOT EXISTS favorites (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS reservations (
-  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  line_user_id  BIGINT UNSIGNED NOT NULL,
-  car_id        BIGINT UNSIGNED     NULL COMMENT '車両を指定しない相談もあるためNULL可',
-  location      ENUM('fukuoka','kanagawa') NOT NULL,
-  preferred_1   DATETIME        NOT NULL COMMENT '第1希望',
-  preferred_2   DATETIME            NULL,
-  preferred_3   DATETIME            NULL,
-  confirmed_at  DATETIME            NULL COMMENT '担当者が確定した日時',
-  status        ENUM('tentative','confirmed','changed','cancelled') NOT NULL DEFAULT 'tentative'
-                COMMENT '仮予約/確定/変更/キャンセル',
-  note          TEXT                NULL,
-  created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  line_user_id      BIGINT UNSIGNED     NULL COMMENT 'Webフォーム経由はNULL',
+  car_id            BIGINT UNSIGNED     NULL COMMENT '車両を指定しない相談もあるためNULL可',
+  location          ENUM('fukuoka','kanagawa') NOT NULL,
+  source            ENUM('line','web','liff') NOT NULL DEFAULT 'line',
+  purpose           ENUM('visit','consult') NOT NULL DEFAULT 'visit' COMMENT '来店/オンライン相談',
+  contact_name      VARCHAR(64)         NULL,
+  contact_tel       VARCHAR(32)         NULL,
+  contact_email     VARCHAR(191)        NULL,
+  preferred_1       DATETIME        NOT NULL COMMENT '第1希望',
+  preferred_2       DATETIME            NULL,
+  preferred_3       DATETIME            NULL,
+  confirmed_at      DATETIME            NULL COMMENT '担当者が確定した日時',
+  status            ENUM('tentative','confirmed','changed','cancelled') NOT NULL DEFAULT 'tentative'
+                    COMMENT '仮予約/確定/変更/キャンセル',
+  assigned_admin_id BIGINT UNSIGNED     NULL,
+  note              TEXT                NULL,
+  created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_reservations_status (status, preferred_1),
   KEY idx_reservations_user (line_user_id),
-  CONSTRAINT fk_reservations_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
-  CONSTRAINT fk_reservations_car  FOREIGN KEY (car_id)       REFERENCES cars (id)       ON DELETE SET NULL
+  KEY idx_reservations_assigned (assigned_admin_id, status),
+  CONSTRAINT fk_reservations_user  FOREIGN KEY (line_user_id)      REFERENCES line_users (id)  ON DELETE SET NULL,
+  CONSTRAINT fk_reservations_car   FOREIGN KEY (car_id)            REFERENCES cars (id)        ON DELETE SET NULL,
+  CONSTRAINT fk_reservations_admin FOREIGN KEY (assigned_admin_id) REFERENCES admin_users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS notification_conditions (
@@ -257,3 +275,54 @@ CREATE TABLE IF NOT EXISTS notification_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- -----------------------------------------------------------------------------
+-- inquiry_notes / inquiry_images / audit_logs : フェーズ4
+-- -----------------------------------------------------------------------------
+
+-- 1件の問い合わせに対する「電話した」「見積を送った」を時系列で積む。
+CREATE TABLE IF NOT EXISTS inquiry_notes (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  inquiry_id BIGINT UNSIGNED NOT NULL,
+  admin_id   BIGINT UNSIGNED     NULL COMMENT '担当者を消しても履歴は残すためNULL可',
+  admin_name VARCHAR(128)        NULL COMMENT '記録時点の表示名。後から管理者を消しても誰が書いたか分かる',
+  kind       ENUM('note','call','reply','status') NOT NULL DEFAULT 'note',
+  body       TEXT            NOT NULL,
+  created_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_inquiry_notes_inquiry (inquiry_id, created_at),
+  CONSTRAINT fk_inquiry_notes_inquiry FOREIGN KEY (inquiry_id) REFERENCES inquiries (id) ON DELETE CASCADE,
+  CONSTRAINT fk_inquiry_notes_admin   FOREIGN KEY (admin_id)   REFERENCES admin_users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 査定写真はお客様の個人資産の写真なので公開領域（img.autobest.jp）に置かない。
+-- 実体は storage/assessments/ に置き、DBにはファイル名だけを持つ。
+-- 配信は管理画面のログイン必須スクリプト（admin/inquiry_image.php）に限定する。
+CREATE TABLE IF NOT EXISTS inquiry_images (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  inquiry_id BIGINT UNSIGNED NOT NULL,
+  file_name  VARCHAR(64)     NOT NULL COMMENT '乱数32桁 + 拡張子。パスは含めない',
+  position   INT UNSIGNED    NOT NULL DEFAULT 0,
+  created_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_inquiry_images_inquiry (inquiry_id, position),
+  CONSTRAINT fk_inquiry_images_inquiry FOREIGN KEY (inquiry_id) REFERENCES inquiries (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 管理操作の証跡（要件書6章「誰がいつ返信・変更・配信したか」）。
+-- admin_id にFKを張らない（張ると管理者削除時に証跡まで消える or 消せなくなる）。
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  admin_id    BIGINT UNSIGNED     NULL,
+  admin_name  VARCHAR(128)        NULL,
+  action      VARCHAR(64)     NOT NULL COMMENT 'car.publish / inquiry.assign など',
+  target_type VARCHAR(32)         NULL,
+  target_id   BIGINT UNSIGNED     NULL,
+  summary     VARCHAR(255)        NULL,
+  ip          VARCHAR(45)         NULL COMMENT 'IPv6も入るため45文字',
+  created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_audit_created (created_at),
+  KEY idx_audit_target (target_type, target_id),
+  KEY idx_audit_admin (admin_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

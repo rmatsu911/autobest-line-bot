@@ -14,6 +14,11 @@ DirectoryIndex index.php
     Require all denied
 </FilesMatch>
 
+# _form_layout.php のような部品ファイルは直接開かせない
+<FilesMatch "^_">
+    Require all denied
+</FilesMatch>
+
 # 設定ファイル・SQL・ログが誤って置かれても配信しない
 <FilesMatch "\.(env|ini|log|sql|md|sh|lock)$">
     Require all denied

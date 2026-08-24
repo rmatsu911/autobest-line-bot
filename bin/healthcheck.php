@@ -77,6 +77,15 @@ if ($dbDriver !== 'sqlite' && Config::get('DB_HOST', '') === 'localhost') {
 $logDir = APP_ROOT . '/storage/logs';
 is_writable($logDir) ? ok('ログディレクトリ', $logDir) : ng('ログディレクトリ', $logDir . ' に書き込めません');
 
+// 査定写真の保存先。ここが書けないと、写真付きの査定申込で写真だけが落ちる。
+$assessmentDir = APP_ROOT . '/storage/assessments';
+if (!is_dir($assessmentDir)) {
+    @mkdir($assessmentDir, 0700, true);
+}
+is_writable($assessmentDir)
+    ? ok('査定写真の保存先', $assessmentDir)
+    : ng('査定写真の保存先', $assessmentDir . ' に書き込めません');
+
 // -----------------------------------------------------------------------------
 echo PHP_EOL . '3. データベース' . PHP_EOL;
 // -----------------------------------------------------------------------------
@@ -98,6 +107,8 @@ try {
         'message_queue', 'webhook_events', 'admin_users',
         // フェーズ3で追加
         'favorites', 'reservations', 'notification_conditions', 'notification_log',
+        // フェーズ4で追加
+        'inquiry_notes', 'inquiry_images', 'audit_logs',
     ];
     $existing = Db::tableNames();
     foreach ($expected as $table) {

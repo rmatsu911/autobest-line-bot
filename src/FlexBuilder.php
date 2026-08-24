@@ -335,9 +335,77 @@ final class FlexBuilder
         ]));
     }
 
+    /**
+     * 見出し・説明・ボタン1つだけの案内カード。
+     *
+     * ただのテキスト＋URLでも用は足りるが、LINEのトークではURLの文字列が
+     * 折り返して読みにくく、押す場所も分かりにくい。
+     * ボタンにすると押し間違いが減り、申込まで届く率が上がる。
+     *
+     * @return array<string,mixed> messages配列にそのまま入れられる1件
+     */
+    public static function linkCard(string $title, string $body, string $buttonLabel, string $url): array
+    {
+        return [
+            'type'     => 'flex',
+            // altText はトーク一覧と通知に出る文字。Flexが表示できない環境でも意味が通るようにする。
+            'altText'  => $title,
+            'contents' => [
+                'type' => 'bubble',
+                'size' => 'kilo',
+                'body' => [
+                    'type'     => 'box',
+                    'layout'   => 'vertical',
+                    'spacing'  => 'md',
+                    'contents' => [
+                        ['type' => 'text', 'text' => $title, 'weight' => 'bold', 'size' => 'md', 'color' => self::NAVY, 'wrap' => true],
+                        ['type' => 'text', 'text' => $body, 'size' => 'sm', 'color' => '#5A5F68', 'wrap' => true],
+                    ],
+                ],
+                'footer' => [
+                    'type'     => 'box',
+                    'layout'   => 'vertical',
+                    'contents' => [[
+                        'type'   => 'button',
+                        'style'  => 'primary',
+                        'height' => 'sm',
+                        'color'  => self::BLUE,
+                        'action' => ['type' => 'uri', 'label' => $buttonLabel, 'uri' => $url],
+                    ]],
+                ],
+            ],
+        ];
+    }
+
     /** 車両詳細ページのURL。LINE内ブラウザで開く */
     public static function carUrl(int $carId): string
     {
-        return rtrim(Config::get('BOT_BASE_URL', 'https://bot.autobest.jp'), '/') . '/car.php?id=' . $carId;
+        return self::pageUrl('car.php', ['id' => $carId]);
+    }
+
+    /** 査定申込フォームのURL */
+    public static function assessmentUrl(): string
+    {
+        return self::pageUrl('assessment.php');
+    }
+
+    /**
+     * 来店・商談予約フォームのURL。
+     * 車両が決まっていればIDを付ける（フォーム側で対象車両として表示される）。
+     */
+    public static function reserveUrl(int $carId = 0): string
+    {
+        return self::pageUrl('reserve.php', $carId > 0 ? ['car_id' => $carId] : []);
+    }
+
+    /**
+     * 公開ページのURL。
+     * BOT_BASE_URL は設置場所によってサブディレクトリを含むことがあるため、
+     * 末尾のスラッシュを落としてから繋ぐ（// になるとLINE側で弾かれる）。
+     */
+    private static function pageUrl(string $file, array $query = []): string
+    {
+        $base = rtrim(Config::get('BOT_BASE_URL', 'https://bot.autobest.jp'), '/') . '/' . $file;
+        return $query === [] ? $base : $base . '?' . http_build_query($query);
     }
 }

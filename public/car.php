@@ -104,6 +104,7 @@ $images = CarRepository::images($id);
                font-size:13px; font-weight:700; }
   /* iPhoneの自動ズームを防ぐため、入力に関わる文字は16px以上にする */
   a { color:var(--blue); }
+  a.btn { text-decoration:none; }
 </style>
 </head>
 <body>
@@ -168,24 +169,22 @@ $images = CarRepository::images($id);
 
 <footer>
   <div class="sub">
-    <button type="button" class="btn ghost" onclick="send('action=fav&amp;car_id=<?= (int) $car['id'] ?>')">お気に入り</button>
-    <button type="button" class="btn ghost" onclick="send('action=reserve&amp;car_id=<?= (int) $car['id'] ?>')">来店・商談予約</button>
+    <?php // お気に入りはLINEのユーザーIDが要るので、トークへ戻して postback を踏んでもらう ?>
+    <button type="button" class="btn ghost" onclick="backToTalk()">お気に入り</button>
+    <?php // 予約と問い合わせはフェーズ4のフォームへ直接飛ばす（LINEに戻る必要がない） ?>
+    <a class="btn ghost" href="assessment.php">今の車を査定</a>
   </div>
-  <button type="button" class="btn primary" onclick="send('action=inquiry&amp;car_id=<?= (int) $car['id'] ?>')">この車について問い合わせる</button>
+  <a class="btn primary" href="reserve.php?car_id=<?= (int) $car['id'] ?>">この車を見に行く（来店予約）</a>
 </footer>
 
 <script>
-// LINE内ブラウザから開いた場合、liff.sendMessages ではなく
-// トークへ戻して postback を踏ませる方が確実。
-// LIFF未導入のフェーズ3では、トークに戻る導線だけを提供する。
-function send(data) {
-  // 押した内容をトークで再現できるよう、URLスキームでトークへ戻す。
+// お気に入りの登録だけはLINEのトークに戻る必要がある。
+// ページからは誰が見ているか分からず、LIFF未導入の今は userId を取れないため。
+function backToTalk() {
   var basicId = <?= json_encode(Config::get('LINE_BASIC_ID', ''), JSON_UNESCAPED_SLASHES) ?>;
-  if (basicId) {
-    location.href = 'https://line.me/R/ti/p/' + encodeURIComponent(basicId);
-  } else {
-    location.href = 'https://line.me/R/nv/chat';
-  }
+  location.href = basicId
+    ? 'https://line.me/R/ti/p/' + encodeURIComponent(basicId)
+    : 'https://line.me/R/nv/chat';
 }
 </script>
 </body>

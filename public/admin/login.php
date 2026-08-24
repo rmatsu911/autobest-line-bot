@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__, 2) . '/config/config.php';
 
+use App\AuditLog;
 use App\Auth;
 
 Auth::startSession();
@@ -31,6 +32,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     );
 
     if ($result['ok']) {
+        // 成功も失敗も記録する。失敗だけを見ていても
+        // 「誰かが入れてしまった」かどうかが分からないため。
+        AuditLog::record('admin.login', 'admin', Auth::id(), 'ログインしました');
+
         // ログイン前に見ようとしていた画面へ戻す。
         // 保存しているのはパス部分のみなので、外部サイトへは飛ばない。
         $next = (string) ($_SESSION['after_login'] ?? 'cars.php');
@@ -38,6 +43,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         header('Location: ' . (str_starts_with($next, '/') ? $next : 'cars.php'));
         exit;
     }
+    AuditLog::record('admin.login.failed', 'admin', null,
+        'ログインに失敗しました（ID: ' . mb_substr(trim((string) ($_POST['login_id'] ?? '')), 0, 64) . '）');
     $error = $result['error'];
 }
 

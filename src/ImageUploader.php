@@ -37,6 +37,67 @@ final class ImageUploader
      */
     public static function store(array $file, int $carId): string
     {
+        // 1〜3) 検証。中身を見て「本当に画像か」を確かめる。
+        [$mime, $width, $height] = self::validateUpload($file);
+        $tmpPath = (string) $file['tmp_name'];
+
+        // 4) 保存先。車両IDごとに分けておくと、車両削除時にまとめて消せる。
+        $dir = self::carDir($carId);
+        if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+            Logger::error('画像保存ディレクトリを作成できません', ['dir' => $dir]);
+            throw new \RuntimeException('画像を保存できませんでした。');
+        }
+        self::protectDirectory(dirname($dir));
+
+        // 5) ファイル名は元の名前を一切使わず、乱数で作る。
+        //    元の名前を残すと、日本語・記号・二重拡張子・パス区切りの扱いを
+        //    すべて自前で守る必要が出てくる。作り直せばその問題自体が消える。
+        $ext      = self::ALLOWED[$mime];
+        $basename = bin2hex(random_bytes(16));
+        $saved    = self::saveNormalized($tmpPath, $dir, $basename, $ext, $mime, $width, $height);
+
+        // 6) 実行権限を与えない。読み取り専用で十分。
+        @chmod($saved, 0644);
+
+        return rtrim(Config::get('IMG_BASE_URL', 'https://img.autobest.jp'), '/')
+            . '/cars/' . $carId . '/' . basename($saved);
+    }
+
+    /**
+     * 公開しない場所へ保存し、ファイル名だけを返す。
+     *
+     * 査定の写真はお客様の車の写真であって商品写真ではない。
+     * img.autobest.jp に置くと、URLさえ分かれば誰でも見られてしまうため、
+     * 公開領域の外（storage/assessments/）に置き、
+     * 管理画面のログイン必須スクリプト経由でしか配信しない。
+     *
+     * 返すのがURLではなくファイル名なのは、DBにパスを持たせないため。
+     * パスを持つと、そこにディレクトリを遡る文字列が入り込む余地が生まれる。
+     */
+    public static function storePrivate(array $file, string $dir): string
+    {
+        [$mime, $width, $height] = self::validateUpload($file);
+        $tmpPath = (string) $file['tmp_name'];
+
+        if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+            Logger::error('画像保存ディレクトリを作成できません', ['dir' => $dir]);
+            throw new \RuntimeException('画像を保存できませんでした。');
+        }
+
+        $basename = bin2hex(random_bytes(16));
+        $saved    = self::saveNormalized($tmpPath, $dir, $basename, self::ALLOWED[$mime], $mime, $width, $height);
+        @chmod($saved, 0600);
+
+        return basename($saved);
+    }
+
+    /**
+     * アップロードの検証。中身を見て種別と寸法を返す。
+     *
+     * @return array{0:string,1:int,2:int} [MIME, 幅, 高さ]
+     */
+    private static function validateUpload(array $file): array
+    {
         self::assertUploadOk($file);
 
         $tmpPath = (string) $file['tmp_name'];
@@ -68,26 +129,7 @@ final class ImageUploader
             throw new \RuntimeException('画像として読み込めませんでした。');
         }
 
-        // 4) 保存先。車両IDごとに分けておくと、車両削除時にまとめて消せる。
-        $dir = self::carDir($carId);
-        if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
-            Logger::error('画像保存ディレクトリを作成できません', ['dir' => $dir]);
-            throw new \RuntimeException('画像を保存できませんでした。');
-        }
-        self::protectDirectory(dirname($dir));
-
-        // 5) ファイル名は元の名前を一切使わず、乱数で作る。
-        //    元の名前を残すと、日本語・記号・二重拡張子・パス区切りの扱いを
-        //    すべて自前で守る必要が出てくる。作り直せばその問題自体が消える。
-        $ext      = self::ALLOWED[$mime];
-        $basename = bin2hex(random_bytes(16));
-        $saved    = self::saveNormalized($tmpPath, $dir, $basename, $ext, $mime, (int) $size[0], (int) $size[1]);
-
-        // 6) 実行権限を与えない。読み取り専用で十分。
-        @chmod($saved, 0644);
-
-        return rtrim(Config::get('IMG_BASE_URL', 'https://img.autobest.jp'), '/')
-            . '/cars/' . $carId . '/' . basename($saved);
+        return [$mime, (int) $size[0], (int) $size[1]];
     }
 
     /**

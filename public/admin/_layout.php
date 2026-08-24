@@ -17,7 +17,7 @@ if (!defined('APP_ROOT')) {
 
 use App\Auth;
 
-/** @param string $active 現在のメニュー（cars / purchases / inquiries） */
+/** @param string $active 現在のメニュー（cars / purchases / inquiries / reservations / audit） */
 function admin_header(string $title, string $active = ''): void
 {
     // 管理画面は検索エンジンにもキャッシュにも載せない。
@@ -26,9 +26,11 @@ function admin_header(string $title, string $active = ''): void
     header('Content-Type: text/html; charset=UTF-8');
 
     $menu = [
-        'cars'      => ['販売在庫', 'cars.php'],
-        'purchases' => ['買取実績', 'purchases.php'],
-        'inquiries' => ['問い合わせ', 'inquiries.php'],
+        'cars'         => ['販売在庫', 'cars.php'],
+        'purchases'    => ['買取実績', 'purchases.php'],
+        'inquiries'    => ['問い合わせ', 'inquiries.php'],
+        'reservations' => ['予約', 'reservations.php'],
+        'audit'        => ['操作履歴', 'audit.php'],
     ];
     ?>
 <!doctype html>
@@ -110,6 +112,59 @@ function admin_footer(): void
 </body>
 </html>
 <?php
+}
+
+/**
+ * 担当者の選択欄。問い合わせと予約で同じ形にするため部品にしている。
+ *
+ * @param array $admins AdminUserRepository::active() の結果
+ */
+function admin_assignee_select(array $admins, ?int $current, string $name = 'assigned_admin_id'): void
+{
+    echo '<select name="' . h($name) . '">';
+    echo '<option value="">担当者未定</option>';
+    foreach ($admins as $admin) {
+        $selected = $current !== null && (int) $admin['id'] === $current ? ' selected' : '';
+        echo '<option value="' . (int) $admin['id'] . '"' . $selected . '>'
+           . h(App\AdminUserRepository::label($admin)) . '</option>';
+    }
+    echo '</select>';
+}
+
+/** 連絡先の表示。LINE経由と素のフォーム経由で持っている情報が違うので一箇所にまとめる。 */
+function admin_contact_cell(array $row): string
+{
+    $lines = [];
+
+    $name = (string) ($row['contact_name'] ?? '');
+    if ($name === '') {
+        $name = (string) ($row['display_name'] ?? '');
+    }
+    $lines[] = '<strong>' . h($name !== '' ? $name : 'お名前未取得') . '</strong>';
+
+    if (!empty($row['contact_tel'])) {
+        // 管理画面をスマホで開いてそのまま折り返せるようにリンクにする。
+        $tel = preg_replace('/[^0-9+]/', '', (string) $row['contact_tel']);
+        $lines[] = '<a href="tel:' . h((string) $tel) . '">' . h((string) $row['contact_tel']) . '</a>';
+    }
+    if (!empty($row['contact_email'])) {
+        $lines[] = '<span class="muted">' . h((string) $row['contact_email']) . '</span>';
+    }
+    if (!empty($row['line_uid'])) {
+        $lines[] = '<span class="muted">LINE: ' . h((string) $row['line_uid']) . '</span>';
+    }
+
+    return implode('<br>', $lines);
+}
+
+/** 申込経路のバッジ */
+function admin_source_badge(?string $source): string
+{
+    return match ($source) {
+        'liff' => '<span class="pill" style="background:#EAF4FE;border-color:#BBD9F7;color:#1268C4">LINE連携</span>',
+        'web'  => '<span class="pill" style="background:#FFF4E5;border-color:#FFD9A8;color:#C85A0E">Webフォーム</span>',
+        default => '<span class="pill" style="background:#E7F5EC;border-color:#A8D5B9;color:#1E6B3A">LINEトーク</span>',
+    };
 }
 
 /** 画面上部のメッセージ */

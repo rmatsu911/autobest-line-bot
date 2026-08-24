@@ -10,12 +10,15 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__, 2) . '/config/config.php';
 
+use App\AuditLog;
 use App\Auth;
 
 Auth::startSession();
 
 $token = (string) ($_POST['_token'] ?? $_GET['_token'] ?? '');
 if ($token !== '' && hash_equals((string) ($_SESSION['csrf_token'] ?? ''), $token)) {
+    // ログアウトは Auth::logout() でセッションが消えるので、記録は先に取る。
+    AuditLog::record('admin.logout', 'admin', Auth::id(), 'ログアウトしました');
     Auth::logout();
 }
 

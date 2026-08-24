@@ -89,18 +89,26 @@ CREATE TABLE IF NOT EXISTS purchase_records (
 CREATE INDEX IF NOT EXISTS idx_purchase_published_date ON purchase_records (published, purchased_on);
 
 CREATE TABLE IF NOT EXISTS inquiries (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  line_user_id INTEGER NOT NULL,
-  car_id       INTEGER     NULL,
-  kind         TEXT    NOT NULL CHECK (kind IN ('assessment', 'car', 'visit')),
-  payload      TEXT        NULL,
-  message      TEXT        NULL,
-  status       TEXT    NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'in_progress', 'done')),
-  created_at   TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
-  updated_at   TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
-  FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
-  FOREIGN KEY (car_id) REFERENCES cars (id) ON DELETE SET NULL
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  line_user_id      INTEGER     NULL,
+  car_id            INTEGER     NULL,
+  kind              TEXT    NOT NULL CHECK (kind IN ('assessment', 'car', 'visit')),
+  source            TEXT    NOT NULL DEFAULT 'line' CHECK (source IN ('line', 'web', 'liff')),
+  contact_name      TEXT        NULL,
+  contact_tel       TEXT        NULL,
+  contact_email     TEXT        NULL,
+  contact_pref      TEXT        NULL,
+  payload           TEXT        NULL,
+  message           TEXT        NULL,
+  status            TEXT    NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'in_progress', 'done')),
+  assigned_admin_id INTEGER     NULL,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  updated_at        TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  FOREIGN KEY (line_user_id)      REFERENCES line_users (id)  ON DELETE SET NULL,
+  FOREIGN KEY (car_id)            REFERENCES cars (id)        ON DELETE SET NULL,
+  FOREIGN KEY (assigned_admin_id) REFERENCES admin_users (id) ON DELETE SET NULL
 );
+CREATE INDEX IF NOT EXISTS idx_inquiries_assigned ON inquiries (assigned_admin_id, status);
 CREATE INDEX IF NOT EXISTS idx_inquiries_status_created ON inquiries (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_inquiries_line_user ON inquiries (line_user_id);
 CREATE INDEX IF NOT EXISTS idx_inquiries_car ON inquiries (car_id);
@@ -199,21 +207,29 @@ CREATE TABLE IF NOT EXISTS favorites (
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites (line_user_id, created_at);
 
 CREATE TABLE IF NOT EXISTS reservations (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  line_user_id INTEGER NOT NULL,
-  car_id       INTEGER     NULL,
-  location     TEXT    NOT NULL CHECK (location IN ('fukuoka','kanagawa')),
-  preferred_1  TEXT    NOT NULL,
-  preferred_2  TEXT        NULL,
-  preferred_3  TEXT        NULL,
-  confirmed_at TEXT        NULL,
-  status       TEXT    NOT NULL DEFAULT 'tentative' CHECK (status IN ('tentative','confirmed','changed','cancelled')),
-  note         TEXT        NULL,
-  created_at   TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
-  updated_at   TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
-  FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
-  FOREIGN KEY (car_id)       REFERENCES cars (id)       ON DELETE SET NULL
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  line_user_id      INTEGER     NULL,
+  car_id            INTEGER     NULL,
+  location          TEXT    NOT NULL CHECK (location IN ('fukuoka','kanagawa')),
+  source            TEXT    NOT NULL DEFAULT 'line' CHECK (source IN ('line', 'web', 'liff')),
+  purpose           TEXT    NOT NULL DEFAULT 'visit' CHECK (purpose IN ('visit', 'consult')),
+  contact_name      TEXT        NULL,
+  contact_tel       TEXT        NULL,
+  contact_email     TEXT        NULL,
+  preferred_1       TEXT    NOT NULL,
+  preferred_2       TEXT        NULL,
+  preferred_3       TEXT        NULL,
+  confirmed_at      TEXT        NULL,
+  status            TEXT    NOT NULL DEFAULT 'tentative' CHECK (status IN ('tentative','confirmed','changed','cancelled')),
+  assigned_admin_id INTEGER     NULL,
+  note              TEXT        NULL,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  updated_at        TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  FOREIGN KEY (line_user_id)      REFERENCES line_users (id)  ON DELETE SET NULL,
+  FOREIGN KEY (car_id)            REFERENCES cars (id)        ON DELETE SET NULL,
+  FOREIGN KEY (assigned_admin_id) REFERENCES admin_users (id) ON DELETE SET NULL
 );
+CREATE INDEX IF NOT EXISTS idx_reservations_assigned ON reservations (assigned_admin_id, status);
 CREATE INDEX IF NOT EXISTS idx_reservations_status ON reservations (status, preferred_1);
 CREATE INDEX IF NOT EXISTS idx_reservations_user   ON reservations (line_user_id);
 
@@ -248,3 +264,48 @@ AFTER UPDATE ON reservations FOR EACH ROW
 BEGIN
   UPDATE reservations SET updated_at = datetime('now', '+9 hours') WHERE id = OLD.id;
 END;
+
+-- -----------------------------------------------------------------------------
+-- inquiry_notes / inquiry_images / audit_logs : フェーズ4
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inquiry_notes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  inquiry_id INTEGER NOT NULL,
+  admin_id   INTEGER     NULL,
+  admin_name TEXT        NULL,
+  kind       TEXT    NOT NULL DEFAULT 'note' CHECK (kind IN ('note','call','reply','status')),
+  body       TEXT    NOT NULL,
+  created_at TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  FOREIGN KEY (inquiry_id) REFERENCES inquiries (id)   ON DELETE CASCADE,
+  FOREIGN KEY (admin_id)   REFERENCES admin_users (id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inquiry_notes_inquiry ON inquiry_notes (inquiry_id, created_at);
+
+-- 査定写真はお客様の個人資産の写真なので公開領域（img.autobest.jp）に置かない。
+-- 実体は storage/assessments/ に置き、DBにはファイル名だけを持つ。
+CREATE TABLE IF NOT EXISTS inquiry_images (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  inquiry_id INTEGER NOT NULL,
+  file_name  TEXT    NOT NULL,
+  position   INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  FOREIGN KEY (inquiry_id) REFERENCES inquiries (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_inquiry_images_inquiry ON inquiry_images (inquiry_id, position);
+
+-- admin_id にFKを張らない（張ると管理者削除時に証跡まで消える or 消せなくなる）。
+-- 代わりに admin_name を文字列で焼き込む。
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id    INTEGER     NULL,
+  admin_name  TEXT        NULL,
+  action      TEXT    NOT NULL,
+  target_type TEXT        NULL,
+  target_id   INTEGER     NULL,
+  summary     TEXT        NULL,
+  ip          TEXT        NULL,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_logs (target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_audit_admin   ON audit_logs (admin_id, created_at);

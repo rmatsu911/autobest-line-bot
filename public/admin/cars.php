@@ -12,6 +12,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__, 2) . '/config/config.php';
 require_once __DIR__ . '/_layout.php';
 
+use App\AuditLog;
 use App\Auth;
 use App\CarRepository;
 use App\ImageUploader;
@@ -33,6 +34,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         Auth::flash('対象の車両が見つかりませんでした。');
     } elseif ($action === 'status') {
         CarRepository::updateStatus($carId, (string) ($_POST['status'] ?? 'draft'));
+        AuditLog::record('car.status', 'car', $carId,
+            $car['maker'] . ' ' . $car['model_name'] . ' の状態を ' . (string) ($_POST['status'] ?? 'draft') . ' に変更');
         Auth::flash('「' . $car['maker'] . ' ' . $car['model_name'] . '」の状態を変更しました。');
         Logger::info('在庫の状態を変更しました', ['car_id' => $carId, 'status' => $_POST['status'] ?? '', 'admin_id' => Auth::id()]);
     } elseif ($action === 'delete') {
@@ -40,6 +43,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         // 順序が逆だと、DBの行が消えた後に実体だけ残って追跡できなくなる。
         ImageUploader::deleteCarDir($carId);
         CarRepository::delete($carId);
+        AuditLog::record('car.delete', 'car', $carId, $car['maker'] . ' ' . $car['model_name'] . ' を削除');
         Auth::flash('「' . $car['maker'] . ' ' . $car['model_name'] . '」を削除しました。');
         Logger::info('在庫を削除しました', ['car_id' => $carId, 'admin_id' => Auth::id()]);
     }

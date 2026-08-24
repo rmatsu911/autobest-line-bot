@@ -5,8 +5,9 @@
  * webhook.php は「署名検証して200を返す」ところまでを担当し、
  * イベントの中身の解釈はこのクラスに閉じる。
  *
- * フェーズ1の対応範囲：follow / unfollow / message(text) / postback（最小）。
- * 在庫カルーセルと査定LIFFはフェーズ3・4で差し込む。
+ * 対応範囲：follow / unfollow / message(text) / postback。
+ * 在庫カルーセルはフェーズ3、査定・予約フォームへの導線はフェーズ4で差し込んだ。
+ * フォームはLIFFではなく素のWebページなので、LINEログインチャネルが無くても動く。
  */
 
 declare(strict_types=1);
@@ -186,9 +187,14 @@ final class WebhookHandler
         // normalize() でひらがなに寄せているので、キーワードはひらがなか漢字で並べる
         // （「サテイ」「ｻﾃｲ」はここに書かなくても「さてい」で拾える）。
         if ($matches(['査定', 'さてい', '買取', 'かいとり', '売りたい', 'うりたい', '見積', 'みつも'])) {
-            return [LineClient::text(
-                "無料査定を承ります。\nメニューの「無料査定を申し込む」から、お車の情報と写真をお送りください。最短で当日中にお見積りをご連絡します。"
-            )];
+            // 文言だけでなく申込フォームのボタンも一緒に返す。
+            // 「メニューから探してください」と案内するより、その場で開ける方が申込が残る。
+            return [
+                LineClient::text(
+                    "無料査定を承ります。\nメニューの「無料査定を申し込む」から、お車の情報と写真をお送りください。最短で当日中にお見積りをご連絡します。"
+                ),
+                $this->assessmentGuide(),
+            ];
         }
 
         // 在庫系のことばは、案内文ではなく実際のカルーセルを返す。
@@ -283,8 +289,12 @@ final class WebhookHandler
             'assessment_info' => [LineClient::text(
                 "無料査定は、メニューの「無料買取査定」からお申し込みいただけます。\nメーカー・車種・年式・走行距離とお車の写真をお送りいただければ、お見積りをご連絡します。"
             )],
-            // フェーズ4・5で実装する導線。今は準備中と明示して黙って落とさない。
-            'assessment', 'inquiry', 'reserve', 'contact', 'consult',
+            // フェーズ4で用意した申込フォーム。LINEログインが無くても使える素のページ。
+            'assessment'      => [$this->assessmentGuide()],
+            'reserve'         => [$this->reserveGuide((int) ($params['car_id'] ?? 0))],
+            'inquiry'         => [$this->inquiryGuide((int) ($params['car_id'] ?? 0))],
+            // フェーズ5で実装する導線。今は準備中と明示して黙って落とさない。
+            'contact', 'consult',
             'my_reservations', 'notify_settings', 'purchases',
             'why_us', 'flow', 'documents' => [LineClient::text(
                 "ただいま準備中の機能です。\nお手数ですが、このトークにメッセージを送っていただくか、お電話（"
@@ -294,6 +304,51 @@ final class WebhookHandler
         };
 
         $this->line->reply($replyToken, $messages);
+    }
+
+    /**
+     * 査定申込フォームへの案内。
+     *
+     * LIFFではなく素のWebページを開かせている。LINEログインチャネルが無くても
+     * 動くうえ、店頭のQRコードやWebサイトからも同じフォームを使えるため。
+     */
+    private function assessmentGuide(): array
+    {
+        return FlexBuilder::linkCard(
+            '無料査定のお申し込み',
+            "お車の情報と写真をお送りいただければ、担当者が査定額をご連絡します。\n入力は1分ほどで終わります。",
+            '査定を申し込む',
+            FlexBuilder::assessmentUrl()
+        );
+    }
+
+    /** 来店・商談予約フォームへの案内 */
+    private function reserveGuide(int $carId): array
+    {
+        return FlexBuilder::linkCard(
+            '来店・商談のご予約',
+            "ご希望の日時を第3希望までお選びください。\n担当者が確認して、確定した日時をご連絡します。",
+            '予約する',
+            FlexBuilder::reserveUrl($carId)
+        );
+    }
+
+    /**
+     * 在庫の問い合わせ。
+     *
+     * 専用フォームは作らず、来店予約フォームへ寄せている。
+     * 「この車が見たい」の次にお客様がしたいのは来店であって、
+     * 質問フォームを1枚挟むとそこで止まってしまうため。
+     * 文章で聞きたい人向けに、トークにそのまま書ける旨も添える。
+     */
+    private function inquiryGuide(int $carId): array
+    {
+        return FlexBuilder::linkCard(
+            'この車について',
+            "見学のご予約はこちらから。\nご質問だけの場合は、このトークにそのままお書きください。担当者が確認してご返信します。",
+            '来店・商談を予約する',
+            FlexBuilder::reserveUrl($carId)
+        );
     }
 
     /**

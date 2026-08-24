@@ -11,6 +11,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__, 2) . '/config/config.php';
 require_once __DIR__ . '/_layout.php';
 
+use App\AuditLog;
 use App\Auth;
 use App\CarRepository;
 use App\CarValidator;
@@ -48,10 +49,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         if ($errors === []) {
             if ($isNew) {
                 $carId = CarRepository::create($_POST);
+                AuditLog::record('car.create', 'car', $carId,
+                    (string) ($_POST['maker'] ?? '') . ' ' . (string) ($_POST['model_name'] ?? '') . ' を登録');
                 Logger::info('在庫を登録しました', ['car_id' => $carId, 'admin_id' => Auth::id()]);
                 Auth::flash('登録しました。続けて写真を追加してください。');
             } else {
                 CarRepository::update($carId, $_POST);
+                AuditLog::record('car.update', 'car', $carId,
+                    (string) ($_POST['maker'] ?? '') . ' ' . (string) ($_POST['model_name'] ?? '') . ' を更新');
                 Logger::info('在庫を更新しました', ['car_id' => $carId, 'admin_id' => Auth::id()]);
                 Auth::flash('保存しました。');
             }
@@ -96,6 +101,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         }
 
         if ($stored > 0) {
+            AuditLog::record('car.image.add', 'car', $carId, $stored . '枚の写真を追加');
             Auth::flash($stored . '枚の写真を追加しました。');
             Logger::info('車両画像を追加しました', ['car_id' => $carId, 'count' => $stored, 'admin_id' => Auth::id()]);
         }
@@ -129,6 +135,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             CarRepository::deleteImage($imageId, $carId);
             // 並びに穴が空くので 0 から詰め直す。
             CarRepository::reorderImages($carId, []);
+            AuditLog::record('car.image.delete', 'car', $carId, '写真を1枚削除');
             Auth::flash('写真を削除しました。');
             Logger::info('車両画像を削除しました', ['car_id' => $carId, 'image_id' => $imageId, 'admin_id' => Auth::id()]);
         }

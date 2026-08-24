@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__, 2) . '/config/config.php';
 require_once __DIR__ . '/_layout.php';
 
+use App\AuditLog;
 use App\Auth;
 use App\Logger;
 use App\PurchaseRepository;
@@ -45,10 +46,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         if ($errors === []) {
             if ($id > 0 && PurchaseRepository::find($id) !== null) {
                 PurchaseRepository::update($id, $_POST);
+                AuditLog::record('purchase.update', 'purchase', $id, '買取実績を更新');
                 Auth::flash('買取実績を保存しました。');
                 Logger::info('買取実績を更新しました', ['purchase_id' => $id, 'admin_id' => Auth::id()]);
             } else {
                 $id = PurchaseRepository::create($_POST);
+                AuditLog::record('purchase.create', 'purchase', $id, '買取実績を登録');
                 Auth::flash('買取実績を登録しました。');
                 Logger::info('買取実績を登録しました', ['purchase_id' => $id, 'admin_id' => Auth::id()]);
             }
@@ -57,11 +60,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         }
     } elseif ($action === 'published' && $id > 0) {
         PurchaseRepository::setPublished($id, (string) ($_POST['published'] ?? '0') === '1');
+        AuditLog::record('purchase.publish', 'purchase', $id,
+            (string) ($_POST['published'] ?? '0') === '1' ? '買取実績を公開' : '買取実績を非公開');
         Auth::flash('公開状態を変更しました。');
         header('Location: purchases.php');
         exit;
     } elseif ($action === 'delete' && $id > 0) {
         PurchaseRepository::delete($id);
+        AuditLog::record('purchase.delete', 'purchase', $id, '買取実績を削除');
         Auth::flash('買取実績を削除しました。');
         Logger::info('買取実績を削除しました', ['purchase_id' => $id, 'admin_id' => Auth::id()]);
         header('Location: purchases.php');
