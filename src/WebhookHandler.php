@@ -17,6 +17,9 @@ final class WebhookHandler
 {
     private LineClient $line;
 
+    /** 処理中イベントの送信者。キーワード応答からお気に入りを引くのに使う */
+    private string $currentUserId = '';
+
     public function __construct(?LineClient $line = null)
     {
         $this->line = $line ?? new LineClient();
@@ -159,6 +162,7 @@ final class WebhookHandler
             return;
         }
 
+        $this->currentUserId = $lineUserId;
         $text = trim((string) ($event['message']['text'] ?? ''));
         $this->line->reply($replyToken, $this->replyForKeyword($text));
     }
@@ -187,17 +191,31 @@ final class WebhookHandler
             )];
         }
 
-        if ($matches(['在庫', 'ざいこ', '販売', '買いたい', 'かいたい', '探し', 'さがし', '車を見', 'くるまを見'])) {
-            return [LineClient::text(
-                "販売中のお車をご案内します。\nメニューの「販売中の車を見る」または「条件で探す」からご覧ください。",
-                LineClient::quickReply([
-                    ['label' => '販売中の車を見る', 'data' => 'action=cars&page=1'],
-                    ['label' => '買取実績を見る',   'data' => 'action=purchases&page=1'],
-                ])
-            )];
+        // 在庫系のことばは、案内文ではなく実際のカルーセルを返す。
+        // 「メニューから選んでください」と一段挟むと離脱するため。
+        // 車種そのものを挙げる人も在庫を探している。
+        // 「重機を見たい」のように「在庫」という語を使わない聞き方を拾うため、
+        // 車種の語も在庫検索のきっかけに含める。
+        $isTruck     = $matches(['とらっく', 'ばす', 'だんぷ', '平ぼでぃ', 'ゆにっく']);
+        $isMachinery = $matches(['重機', 'じゅうき', 'ゆんぼ', 'ふぉーくりふと', 'しょべる', 'ゆあつ', '建機', 'けんき']);
+
+        if ($isTruck || $isMachinery
+            || $matches(['在庫', 'ざいこ', '販売', '買いたい', 'かいたい', '探し', 'さがし', '車を見', 'くるまを見'])) {
+            $filters = ['page' => 1];
+            if ($isTruck) {
+                $filters['category'] = 'truck';
+            } elseif ($isMachinery) {
+                $filters['category'] = 'machinery';
+            }
+            if ($matches(['福岡', 'ふくおか'])) {
+                $filters['location'] = 'fukuoka';
+            } elseif ($matches(['神奈川', 'かながわ', '横浜', 'よこはま'])) {
+                $filters['location'] = 'kanagawa';
+            }
+            return $this->carsCarousel($filters);
         }
 
-        if ($matches(['営業', '時間', '定休', '休み', '場所', '住所', 'アクセス', '地図'])) {
+        if ($matches(['営業', '時間', '定休', '休み', '場所', '住所', 'あくせす', '地図'])) {
             return [LineClient::text($this->shopInfoText())];
         }
 
@@ -206,6 +224,10 @@ final class WebhookHandler
                 'お電話でのお問い合わせは ' . Config::get('SHOP_TEL', '') . " へどうぞ。\n"
                 . Config::get('SHOP_HOURS', '') . ' に受け付けております。'
             )];
+        }
+
+        if ($matches(['お気に入り', 'おきにいり'])) {
+            return $this->favoritesCarousel($this->currentUserId);
         }
 
         if ($matches(['faq', 'よくある', '質問', 'わからない', '使い方'])) {
@@ -237,25 +259,149 @@ final class WebhookHandler
 
         // data は "action=cars&page=1" 形式。parse_str でそのまま配列にする。
         parse_str((string) ($event['postback']['data'] ?? ''), $params);
-        $action = (string) ($params['action'] ?? '');
+        $action     = (string) ($params['action'] ?? '');
+        $lineUserId = (string) ($event['source']['userId'] ?? '');
 
-        $messages = match ($action) {
-            'faq'             => [LineClient::text($this->faqText())],
-            'assessment_info' => [LineClient::text(
-                "無料査定は、メニューの「無料査定を申し込む」からお申し込みいただけます。\nメーカー・車種・年式・走行距離とお車の写真をお送りいただければ、お見積りをご連絡します。"
-            )],
-            // フェーズ3・4で実装する導線。今は準備中と明示して黙って落とさない。
-            'cars', 'purchases', 'inquiry' => [LineClient::text(
-                "ただいま準備中の機能です。\nお手数ですが、メッセージまたはお電話（" . Config::get('SHOP_TEL', '') . "）でお問い合わせください。"
-            )],
-            default => [LineClient::text('操作を受け付けられませんでした。メニューからもう一度お試しください。')],
-        };
+        // タブ切替（richmenuswitch）も postback として飛んでくる。
+        // メニューが切り替わること自体が結果なので、返信はしない。
+        // ここで何か返すと、タブを押すたびにトークが埋まる。
+        if (isset($params['tab'])) {
+            return;
+        }
 
         if ($action === '') {
             Logger::warning('空のpostbackを受信しました', ['data' => $event['postback']['data'] ?? '']);
         }
 
+        $messages = match ($action) {
+            'cars'            => $this->carsCarousel($params),
+            'fav'             => $this->addFavorite($lineUserId, (int) ($params['car_id'] ?? 0)),
+            'favorites'       => $this->favoritesCarousel($lineUserId),
+            'stores'          => [LineClient::text($this->storesText())],
+            'search_menu'     => [$this->searchMenu()],
+            'faq'             => [LineClient::text($this->faqText())],
+            'assessment_info' => [LineClient::text(
+                "無料査定は、メニューの「無料買取査定」からお申し込みいただけます。\nメーカー・車種・年式・走行距離とお車の写真をお送りいただければ、お見積りをご連絡します。"
+            )],
+            // フェーズ4・5で実装する導線。今は準備中と明示して黙って落とさない。
+            'assessment', 'inquiry', 'reserve', 'contact', 'consult',
+            'my_reservations', 'notify_settings', 'purchases',
+            'why_us', 'flow', 'documents' => [LineClient::text(
+                "ただいま準備中の機能です。\nお手数ですが、このトークにメッセージを送っていただくか、お電話（"
+                . Config::get('SHOP_TEL', '') . "）でお問い合わせください。担当者が確認してご返信します。"
+            )],
+            default => [LineClient::text('操作を受け付けられませんでした。メニューからもう一度お試しください。')],
+        };
+
         $this->line->reply($replyToken, $messages);
+    }
+
+    /**
+     * 在庫カルーセル。postback の絞り込みをそのまま次ページへ引き継ぐ。
+     *
+     * @return array<int,array>
+     */
+    private function carsCarousel(array $params): array
+    {
+        $page = max(1, (int) ($params['page'] ?? 1));
+
+        $filters = [];
+        $carry   = [];
+        foreach (['category', 'location', 'sort'] as $key) {
+            $value = (string) ($params[$key] ?? '');
+            if ($value !== '') {
+                $filters[$key] = $value;
+                $carry[]       = $key . '=' . rawurlencode($value);
+            }
+        }
+
+        $result = CarRepository::published($filters, $page, FlexBuilder::PER_PAGE);
+
+        if ($result['rows'] === []) {
+            // 2ページ目以降で空になるのは「最後まで見終わった」状態。
+            // 0件の案内ではなく、終わりであることを伝える。
+            if ($page > 1) {
+                return [LineClient::text('これで最後です。ほかの条件でもお探しいただけます。',
+                    LineClient::quickReply([['label' => 'すべての在庫', 'data' => 'action=cars&page=1']]))];
+            }
+            return [FlexBuilder::emptyResult($this->conditionText($filters))];
+        }
+
+        return [FlexBuilder::carousel($result['rows'], $page, $result['hasNext'], implode('&', $carry))];
+    }
+
+    /** お気に入りへの追加。二重登録はDBのUNIQUE制約に任せる */
+    private function addFavorite(string $lineUserId, int $carId): array
+    {
+        if ($lineUserId === '' || $carId <= 0) {
+            return [LineClient::text('お気に入りに追加できませんでした。')];
+        }
+
+        $car = CarRepository::findPublished($carId);
+        if ($car === null) {
+            // 公開が終わった車両。存在を伏せず、終了したことを伝える。
+            return [LineClient::text('この車両は掲載が終了しました。')];
+        }
+
+        $userRow = Db::one('SELECT id FROM line_users WHERE line_user_id = ?', [$lineUserId]);
+        if ($userRow === null) {
+            return [LineClient::text('お気に入りに追加できませんでした。')];
+        }
+
+        $sql = Db::isSqlite()
+            ? 'INSERT OR IGNORE INTO favorites (line_user_id, car_id) VALUES (?, ?)'
+            : 'INSERT IGNORE INTO favorites (line_user_id, car_id) VALUES (?, ?)';
+        $added = Db::exec($sql, [(int) $userRow['id'], $carId]);
+
+        $name = trim(($car['maker'] ?? '') . ' ' . ($car['model_name'] ?? ''));
+
+        return [LineClient::text(
+            $added > 0
+                ? "「{$name}」をお気に入りに追加しました。"
+                : "「{$name}」はすでにお気に入りに入っています。",
+            LineClient::quickReply([
+                ['label' => 'お気に入りを見る', 'data' => 'action=favorites'],
+                ['label' => '在庫をもっと見る', 'data' => 'action=cars&page=1'],
+            ])
+        )];
+    }
+
+    /** お気に入り一覧をカルーセルで返す */
+    private function favoritesCarousel(string $lineUserId): array
+    {
+        if ($lineUserId === '') {
+            return [LineClient::text('お気に入りを取得できませんでした。')];
+        }
+
+        $rows = Db::all(
+            'SELECT c.*,
+                    (SELECT image_url FROM car_images WHERE car_id = c.id ORDER BY position, id LIMIT 1) AS thumb_url
+             FROM favorites f
+             JOIN cars c ON c.id = f.car_id
+             JOIN line_users u ON u.id = f.line_user_id
+             WHERE u.line_user_id = ? AND c.status = \'published\'
+             ORDER BY f.created_at DESC',
+            [$lineUserId]
+        );
+
+        if ($rows === []) {
+            return [LineClient::text(
+                "お気に入りはまだありません。\n気になるお車のカードから「お気に入り」を押すと保存できます。",
+                LineClient::quickReply([['label' => '販売在庫を見る', 'data' => 'action=cars&page=1']])
+            )];
+        }
+
+        return [FlexBuilder::carousel(array_slice($rows, 0, FlexBuilder::PER_PAGE), 1, false)];
+    }
+
+    /** 0件メッセージに出す条件の文言 */
+    private function conditionText(array $filters): string
+    {
+        $parts = array_filter([
+            car_category_label($filters['category'] ?? null),
+            car_location_label($filters['location'] ?? null),
+        ]);
+        return implode(' ／ ', $parts);
     }
 
     // -------------------------------------------------------------------------
@@ -343,7 +489,8 @@ final class WebhookHandler
      * 2回に分けて呼ぶ理由：mb_convert_kana は変換結果を再変換しない。
      * 'asKVc' と一度に渡すと、c が見るのは「元から全角カタカナだった文字」だけで、
      * K で全角化されたばかりの「サテイ」はひらがなにならず取りこぼす。
-     * 最後にひらがなへ寄せるので、キーワード側はひらがなか漢字で書く。
+     * 最後にひらがなへ寄せるので、キーワード側は必ずひらがなか漢字で書く。
+     * カタカナのまま書くと入力側がひらがなに変換済みで、永久に一致しない。
      */
     private function normalize(string $text): string
     {
@@ -361,6 +508,57 @@ final class WebhookHandler
             Config::get('SHOP_HOURS', '') !== ''   ? '営業時間: ' . Config::get('SHOP_HOURS', '') : '',
             Config::get('SHOP_HOLIDAY', '') !== '' ? '定休日: ' . Config::get('SHOP_HOLIDAY', '') : '',
         ]));
+    }
+
+    /** 2拠点の案内。要件書の「福岡・神奈川の店舗」に対応する */
+    private function storesText(): string
+    {
+        $lines = ['AUTOBEST の拠点'];
+
+        foreach ([
+            ['福岡本社',   'SHOP_FUKUOKA_ADDRESS', 'SHOP_FUKUOKA_TEL'],
+            ['神奈川支店', 'SHOP_KANAGAWA_ADDRESS', 'SHOP_KANAGAWA_TEL'],
+        ] as [$label, $addrKey, $telKey]) {
+            $addr = Config::get($addrKey, '');
+            $tel  = Config::get($telKey, Config::get('SHOP_TEL', ''));
+            $lines[] = '';
+            $lines[] = '■ ' . $label;
+            if ($addr !== '') { $lines[] = $addr; }
+            if ($tel !== '')  { $lines[] = 'TEL: ' . $tel; }
+        }
+
+        $hours = Config::get('SHOP_HOURS', '');
+        if ($hours !== '') {
+            $lines[] = '';
+            $lines[] = '営業時間: ' . $hours;
+        }
+        $holiday = Config::get('SHOP_HOLIDAY', '');
+        if ($holiday !== '') {
+            $lines[] = '定休日: ' . $holiday;
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * 「条件から検索」。LIFFを使わず、クイックリプライで絞り込ませる。
+     * フェーズ4でLIFFの検索画面に差し替える。
+     */
+    private function searchMenu(): array
+    {
+        return LineClient::text(
+            "お探しの条件をお選びください。",
+            LineClient::quickReply([
+                ['label' => '乗用車・軽',     'data' => 'action=cars&page=1&category=passenger'],
+                ['label' => 'トラック・バス', 'data' => 'action=cars&page=1&category=truck'],
+                ['label' => '重機・作業車',   'data' => 'action=cars&page=1&category=machinery'],
+                ['label' => 'その他車両',     'data' => 'action=cars&page=1&category=other'],
+                ['label' => '福岡本社',       'data' => 'action=cars&page=1&location=fukuoka'],
+                ['label' => '神奈川支店',     'data' => 'action=cars&page=1&location=kanagawa'],
+                ['label' => '新着順で見る',   'data' => 'action=cars&page=1&sort=new'],
+                ['label' => 'すべての在庫',   'data' => 'action=cars&page=1'],
+            ])
+        );
     }
 
     private function faqText(): string

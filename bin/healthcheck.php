@@ -93,12 +93,28 @@ try {
         }
     }
 
-    $expected = ['line_users', 'cars', 'car_images', 'purchase_records', 'inquiries', 'message_queue', 'webhook_events', 'admin_users'];
+    $expected = [
+        'line_users', 'cars', 'car_images', 'purchase_records', 'inquiries',
+        'message_queue', 'webhook_events', 'admin_users',
+        // フェーズ3で追加
+        'favorites', 'reservations', 'notification_conditions', 'notification_log',
+    ];
     $existing = Db::tableNames();
     foreach ($expected as $table) {
         in_array($table, $existing, true)
             ? ok("テーブル {$table}")
-            : ng("テーブル {$table}", 'sql/schema.sql を流し込んでください');
+            : ng("テーブル {$table}", 'php bin/migrate.php --apply を実行してください');
+    }
+
+    // 未適用の移行が残っていないか
+    if (in_array('schema_migrations', $existing, true)) {
+        $applied = count(Db::all('SELECT version FROM schema_migrations'));
+        $files   = glob(APP_ROOT . '/sql/migrations/*_' . (Db::isSqlite() ? 'sqlite' : 'mysql') . '.sql') ?: [];
+        count($files) <= $applied
+            ? ok('スキーマ移行', "{$applied}件すべて適用済み")
+            : ng('スキーマ移行', (count($files) - $applied) . '件が未適用です（php bin/migrate.php）');
+    } else {
+        ng('スキーマ移行', 'schema_migrations がありません（php bin/migrate.php --apply）');
     }
 } catch (Throwable $e) {
     ng('接続', $e->getMessage());

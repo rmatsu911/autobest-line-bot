@@ -36,27 +36,41 @@ CREATE TABLE IF NOT EXISTS line_users (
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS cars (
   id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  stock_number     VARCHAR(32)         NULL COMMENT '店舗管理用の在庫番号',
+  category         ENUM('passenger','truck','machinery','other') NOT NULL DEFAULT 'passenger'
+                   COMMENT '乗用車・軽/トラック・バス/重機・作業車/その他',
+  location         ENUM('fukuoka','kanagawa') NOT NULL DEFAULT 'fukuoka' COMMENT '福岡本社/神奈川支店',
   maker            VARCHAR(64)     NOT NULL COMMENT 'メーカー',
   model_name       VARCHAR(128)    NOT NULL COMMENT '車種名',
   grade            VARCHAR(128)        NULL COMMENT 'グレード',
   model_year       SMALLINT UNSIGNED   NULL COMMENT '年式（西暦）',
   mileage_km       INT UNSIGNED        NULL COMMENT '走行距離(km)',
+  engine_hours     INT UNSIGNED        NULL COMMENT '稼働時間(h)。重機で使用',
   total_price      INT UNSIGNED        NULL COMMENT '支払総額(円)',
   body_price       INT UNSIGNED        NULL COMMENT '車両本体価格(円)',
+  -- 「応談」は未入力とは別の状態。NULL だけでは区別できないので独立させる。
+  price_negotiable TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1=価格応談として表示',
   inspection_until DATE                NULL COMMENT '車検満了日。NULL=車検なし/抹消',
   body_color       VARCHAR(32)         NULL,
   fuel             VARCHAR(16)         NULL COMMENT 'ガソリン/ディーゼル/ハイブリッド など',
   transmission     VARCHAR(16)         NULL COMMENT 'AT/MT/CVT など',
   body_type        VARCHAR(32)         NULL COMMENT '軽/セダン/SUV など',
   note             TEXT                NULL,
-  status           ENUM('draft','published','sold') NOT NULL DEFAULT 'draft',
+  status           ENUM('draft','pending','published','negotiating','sold') NOT NULL DEFAULT 'draft'
+                   COMMENT '下書き/承認待ち/公開中/商談中/成約済み',
   sort_order       INT             NOT NULL DEFAULT 0 COMMENT '小さいほど先頭',
+  -- 「新着」バッジと新着順に使う。created_at だと下書きのまま寝かせた車両が
+  -- 公開直後から古く見えてしまう。
+  published_at     DATETIME            NULL COMMENT '公開に切り替えた日時',
   created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  UNIQUE KEY uq_cars_stock_number (stock_number),
   -- カルーセルは「status='published' を sort_order 順」で必ず引くので複合インデックスを張る。
   -- 列の順序が (status, sort_order) なのは、等値で絞ってから並べ替えるとソートを省けるため。
   KEY idx_cars_status_sort (status, sort_order),
+  KEY idx_cars_published_at (status, published_at),
+  KEY idx_cars_category_location (status, category, location),
   KEY idx_cars_search (status, body_type, total_price)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -173,6 +187,73 @@ CREATE TABLE IF NOT EXISTS admin_users (
   updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_admin_users_login_id (login_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- -----------------------------------------------------------------------------
+-- favorites / reservations / notification_* : フェーズ3以降で使う
+--   定義の意図は sql/migrations/001_phase3_mysql.sql のコメントを参照。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS favorites (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  line_user_id BIGINT UNSIGNED NOT NULL,
+  car_id       BIGINT UNSIGNED NOT NULL,
+  created_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_favorites (line_user_id, car_id),
+  KEY idx_favorites_user (line_user_id, created_at),
+  CONSTRAINT fk_favorites_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_favorites_car  FOREIGN KEY (car_id)       REFERENCES cars (id)       ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS reservations (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  line_user_id  BIGINT UNSIGNED NOT NULL,
+  car_id        BIGINT UNSIGNED     NULL COMMENT '車両を指定しない相談もあるためNULL可',
+  location      ENUM('fukuoka','kanagawa') NOT NULL,
+  preferred_1   DATETIME        NOT NULL COMMENT '第1希望',
+  preferred_2   DATETIME            NULL,
+  preferred_3   DATETIME            NULL,
+  confirmed_at  DATETIME            NULL COMMENT '担当者が確定した日時',
+  status        ENUM('tentative','confirmed','changed','cancelled') NOT NULL DEFAULT 'tentative'
+                COMMENT '仮予約/確定/変更/キャンセル',
+  note          TEXT                NULL,
+  created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_reservations_status (status, preferred_1),
+  KEY idx_reservations_user (line_user_id),
+  CONSTRAINT fk_reservations_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_reservations_car  FOREIGN KEY (car_id)       REFERENCES cars (id)       ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS notification_conditions (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  line_user_id  BIGINT UNSIGNED NOT NULL,
+  category      ENUM('passenger','truck','machinery','other') NULL COMMENT 'NULL=すべて',
+  maker         VARCHAR(64)         NULL,
+  keyword       VARCHAR(128)        NULL COMMENT '車種名の部分一致',
+  price_max     INT UNSIGNED        NULL COMMENT '支払総額の上限(円)',
+  location      ENUM('fukuoka','kanagawa') NULL COMMENT 'NULL=両拠点',
+  enabled       TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0=配信停止。即時反映する',
+  created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_notify_enabled (enabled),
+  KEY idx_notify_user (line_user_id),
+  CONSTRAINT fk_notify_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS notification_log (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  line_user_id BIGINT UNSIGNED NOT NULL,
+  car_id       BIGINT UNSIGNED NOT NULL,
+  sent_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  -- 同一車両の重複通知をDBの制約で防ぐ
+  UNIQUE KEY uq_notification_log (line_user_id, car_id),
+  CONSTRAINT fk_notiflog_user FOREIGN KEY (line_user_id) REFERENCES line_users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_notiflog_car  FOREIGN KEY (car_id)       REFERENCES cars (id)       ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

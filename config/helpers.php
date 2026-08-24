@@ -63,10 +63,12 @@ function inspection(?string $date): string
 function car_status_label(string $status): string
 {
     return match ($status) {
-        'published' => '公開中',
-        'draft'     => '下書き',
-        'sold'      => '成約済み',
-        default     => $status,
+        'draft'       => '下書き',
+        'pending'     => '承認待ち',
+        'published'   => '公開中',
+        'negotiating' => '商談中',
+        'sold'        => '成約済み',
+        default       => $status,
     };
 }
 
@@ -83,4 +85,92 @@ function old(array $posted, array $record, string $key, string|int|null $default
         return (string) $record[$key];
     }
     return (string) $default;
+}
+
+// -----------------------------------------------------------------------------
+// 車両の表示ヘルパ（フェーズ3で追加）
+//   LINEのFlexメッセージ・車両詳細ページ・管理画面で同じ文言を使うため、
+//   表示の決まりごとはここに集約する。
+// -----------------------------------------------------------------------------
+
+/** 取扱区分の表示名 */
+function car_category_label(?string $category): string
+{
+    return match ($category) {
+        'passenger' => '乗用車・軽自動車',
+        'truck'     => 'トラック・バス',
+        'machinery' => '重機・作業車・フォークリフト',
+        'other'     => 'その他車両',
+        default     => '',
+    };
+}
+
+/** 拠点の表示名 */
+function car_location_label(?string $location): string
+{
+    return match ($location) {
+        'fukuoka'  => '福岡本社',
+        'kanagawa' => '神奈川支店',
+        default    => '',
+    };
+}
+
+/**
+ * 価格の表示。
+ * 「応談」は未入力とは別物なので、price_negotiable を先に見る。
+ * 金額を入れ忘れた車両を勝手に「応談」と出すと、後で値付けの齟齬になる。
+ */
+function car_price_text(array $car): string
+{
+    if ((int) ($car['price_negotiable'] ?? 0) === 1) {
+        return '価格応談';
+    }
+    $total = $car['total_price'] ?? null;
+    if ($total === null || $total === '') {
+        return '価格応談';
+    }
+    return number_format((int) $total) . '円';
+}
+
+/** カルーセル用の短い価格表記（「328.0万円」）。桁が多いとバブルで折り返すため */
+function car_price_short(array $car): string
+{
+    if ((int) ($car['price_negotiable'] ?? 0) === 1) {
+        return '価格応談';
+    }
+    $total = $car['total_price'] ?? null;
+    if ($total === null || $total === '') {
+        return '価格応談';
+    }
+    $man = (int) $total / 10000;
+    return rtrim(rtrim(number_format($man, 1), '0'), '.') . '万円';
+}
+
+/**
+ * 使用状況の表記。
+ * 重機・フォークリフトは走行距離ではなく稼働時間で状態を示すので、
+ * 取扱区分によって出す項目を変える。
+ */
+function car_usage_text(array $car): string
+{
+    if (($car['category'] ?? '') === 'machinery') {
+        $h = $car['engine_hours'] ?? null;
+        return ($h === null || $h === '') ? '稼働時間不明' : '稼働 ' . number_format((int) $h) . 'h';
+    }
+    return mileage($car['mileage_km'] ?? null);
+}
+
+/**
+ * 新着かどうか。published_at から $days 日以内。
+ * created_at を使わないのは、下書きのまま寝かせた車両が
+ * 公開した瞬間から「古い」扱いになってしまうため。
+ */
+function car_is_new(array $car, int $days = 14): bool
+{
+    $publishedAt = $car['published_at'] ?? null;
+    if ($publishedAt === null || $publishedAt === '') {
+        return false;
+    }
+    $ts = strtotime((string) $publishedAt);
+    return $ts !== false && $ts >= strtotime("-{$days} days");
 }

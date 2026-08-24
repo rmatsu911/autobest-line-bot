@@ -189,6 +189,39 @@ final class LineClient
         return $this->request('GET', '/v2/bot/richmenu/list');
     }
 
+    /**
+     * リッチメニューエイリアス。タブ切替（richmenuswitch）の宛先になる。
+     *
+     * メニューIDは作り直すたびに変わるが、エイリアスIDは固定できる。
+     * 切替アクションはエイリアスIDを参照するので、メニューを作り直しても
+     * 各ボタンの定義を書き換えずに済む。
+     */
+    public function createRichMenuAlias(string $aliasId, string $richMenuId): LineResponse
+    {
+        return $this->post('/v2/bot/richmenu/alias', [
+            'richMenuAliasId' => $aliasId,
+            'richMenuId'      => $richMenuId,
+        ]);
+    }
+
+    /** 既にあるエイリアスの向き先を差し替える */
+    public function updateRichMenuAlias(string $aliasId, string $richMenuId): LineResponse
+    {
+        return $this->request('POST', '/v2/bot/richmenu/alias/' . rawurlencode($aliasId), [
+            'richMenuId' => $richMenuId,
+        ]);
+    }
+
+    public function deleteRichMenuAlias(string $aliasId): LineResponse
+    {
+        return $this->request('DELETE', '/v2/bot/richmenu/alias/' . rawurlencode($aliasId));
+    }
+
+    public function listRichMenuAliases(): LineResponse
+    {
+        return $this->request('GET', '/v2/bot/richmenu/alias/list');
+    }
+
     public function deleteRichMenu(string $richMenuId): LineResponse
     {
         return $this->request('DELETE', '/v2/bot/richmenu/' . rawurlencode($richMenuId));

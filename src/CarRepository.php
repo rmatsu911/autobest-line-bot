@@ -14,8 +14,10 @@ final class CarRepository
 {
     /** 入力を受け付ける列。ここに無いキーは無視される（意図しない列の書き換えを防ぐ） */
     private const FILLABLE = [
-        'maker', 'model_name', 'grade', 'model_year', 'mileage_km',
-        'total_price', 'body_price', 'inspection_until', 'body_color',
+        'stock_number', 'category', 'location',
+        'maker', 'model_name', 'grade', 'model_year', 'mileage_km', 'engine_hours',
+        'total_price', 'body_price', 'price_negotiable',
+        'inspection_until', 'body_color',
         'fuel', 'transmission', 'body_type', 'note', 'status', 'sort_order',
     ];
 
@@ -126,10 +128,77 @@ final class CarRepository
 
     public static function updateStatus(int $id, string $status): void
     {
-        if (!in_array($status, ['draft', 'published', 'sold'], true)) {
+        if (!in_array($status, CarValidator::STATUSES, true)) {
             throw new \InvalidArgumentException('不正なステータスです');
         }
-        Db::exec('UPDATE cars SET status = ? WHERE id = ?', [$status, $id]);
+
+        // 初めて公開したときだけ published_at を入れる。
+        // 公開→下書き→公開と往復するたびに更新すると、そのたび「新着」に戻り、
+        // 同じ車両が繰り返し新着通知の対象になってしまう。
+        Db::exec(
+            'UPDATE cars SET status = ?, published_at = CASE
+                WHEN ? = \'published\' AND published_at IS NULL THEN ' . Db::nowSql() . '
+                ELSE published_at END
+             WHERE id = ?',
+            [$status, $status, $id]
+        );
+    }
+
+    /**
+     * LINEのカルーセル用。公開中の車両だけを返す。
+     *
+     * 下書き・承認待ち・商談中・成約済みは、URLを直接叩かれても出さない。
+     * ここが「未承認在庫と公開終了在庫がLINE経由でも漏れない」ことの要。
+     *
+     * @param array{category?:string,location?:string,price_max?:int} $filters
+     * @return array{rows:array,hasNext:bool}
+     */
+    public static function published(array $filters, int $page, int $perPage = 10): array
+    {
+        $where  = ["c.status = 'published'"];
+        $params = [];
+
+        if (!empty($filters['category']) && in_array($filters['category'], CarValidator::CATEGORIES, true)) {
+            $where[]  = 'c.category = ?';
+            $params[] = $filters['category'];
+        }
+        if (!empty($filters['location']) && in_array($filters['location'], CarValidator::LOCATIONS, true)) {
+            $where[]  = 'c.location = ?';
+            $params[] = $filters['location'];
+        }
+        if (!empty($filters['price_max'])) {
+            // 応談の車両は上限で除外しない（金額が決まっていないため）
+            $where[]  = '(c.price_negotiable = 1 OR c.total_price <= ?)';
+            $params[] = (int) $filters['price_max'];
+        }
+
+        $whereSql = ' WHERE ' . implode(' AND ', $where);
+
+        // 並び順は2種類だけ。利用者入力をそのままORDER BYに載せないよう、
+        // 許可した文字列にしか分岐しない。
+        $orderSql = ($filters['sort'] ?? '') === 'new'
+            ? ' ORDER BY c.published_at DESC, c.id DESC'
+            : ' ORDER BY c.sort_order, c.id DESC';
+
+        // 次ページの有無を数えるため1件多く取る。COUNT(*) を別に投げるより1往復少ない。
+        $rows = Db::paged(
+            'SELECT c.*,
+                    (SELECT image_url FROM car_images WHERE car_id = c.id ORDER BY position, id LIMIT 1) AS thumb_url
+             FROM cars c' . $whereSql . $orderSql,
+            $params,
+            $perPage + 1,
+            ($page - 1) * $perPage
+        );
+
+        $hasNext = count($rows) > $perPage;
+
+        return ['rows' => array_slice($rows, 0, $perPage), 'hasNext' => $hasNext];
+    }
+
+    /** 公開中の1台。詳細ページ用。非公開ならnullを返す */
+    public static function findPublished(int $id): ?array
+    {
+        return Db::one("SELECT * FROM cars WHERE id = ? AND status = 'published'", [$id]);
     }
 
     /** 車両と画像レコードを削除する（画像の実体は呼び出し側で消す） */

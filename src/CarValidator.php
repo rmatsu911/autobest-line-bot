@@ -15,7 +15,9 @@ final class CarValidator
     public const FUELS         = ['ガソリン', 'ハイブリッド', 'ディーゼル', 'LPG', '電気', 'その他'];
     public const TRANSMISSIONS = ['AT', 'CVT', 'MT', 'その他'];
     public const BODY_TYPES    = ['軽自動車', 'コンパクト', 'セダン', 'ワゴン', 'ミニバン', 'SUV', 'クーペ', 'オープン', 'トラック', 'その他'];
-    public const STATUSES      = ['draft', 'published', 'sold'];
+    public const STATUSES      = ['draft', 'pending', 'published', 'negotiating', 'sold'];
+    public const CATEGORIES    = ['passenger', 'truck', 'machinery', 'other'];
+    public const LOCATIONS     = ['fukuoka', 'kanagawa'];
 
     /**
      * @return array<string,string> 列名 => エラーメッセージ。空配列なら問題なし。
@@ -80,12 +82,40 @@ final class CarValidator
             $errors['inspection_until'] = '車検満了日は YYYY-MM-DD の形式で入力してください。';
         }
 
+        // --- 在庫番号 ---
+        $stock = self::str($input, 'stock_number');
+        if ($stock !== '') {
+            // 半角英数とハイフンのみ。全角や空白が混ざるとUNIQUE制約をすり抜けた
+            // 「見た目は同じだが別の値」が生まれる。
+            if (preg_match('/\A[A-Za-z0-9-]{1,32}\z/', $stock) !== 1) {
+                $errors['stock_number'] = '在庫番号は半角英数字とハイフンの32文字以内で入力してください。';
+            }
+        }
+
+        // --- 稼働時間（重機） ---
+        $hours = self::str($input, 'engine_hours');
+        if ($hours !== '') {
+            if (!ctype_digit($hours)) {
+                $errors['engine_hours'] = '稼働時間は半角数字で入力してください。';
+            } elseif ((int) $hours > 200000) {
+                $errors['engine_hours'] = '稼働時間の値が大きすぎます。';
+            }
+        }
+
+        // 重機は走行距離ではなく稼働時間で状態を示すので、公開時はどちらかを求める。
+        if (self::str($input, 'status') === 'published' && self::str($input, 'category') === 'machinery'
+            && $hours === '' && self::str($input, 'mileage_km') === '') {
+            $errors['engine_hours'] = '重機を公開するには稼働時間の入力が必要です。';
+        }
+
         // --- 選択肢 ---
         foreach ([
             'fuel'         => self::FUELS,
             'transmission' => self::TRANSMISSIONS,
             'body_type'    => self::BODY_TYPES,
             'status'       => self::STATUSES,
+            'category'     => self::CATEGORIES,
+            'location'     => self::LOCATIONS,
         ] as $column => $allowed) {
             $value = self::str($input, $column);
             if ($value !== '' && !in_array($value, $allowed, true)) {
@@ -105,8 +135,10 @@ final class CarValidator
         // --- 公開するなら最低限の情報が揃っていること ---
         // 公開後にLINEのカルーセルへ出るので、価格と年式が空のまま出さない。
         if (self::str($input, 'status') === 'published') {
-            if (self::str($input, 'total_price') === '') {
-                $errors['total_price'] = '公開するには支払総額の入力が必要です。';
+            // 「応談」を選んでいる場合は金額の入力を求めない。
+            $negotiable = (string) ($input['price_negotiable'] ?? '0') === '1';
+            if (!$negotiable && self::str($input, 'total_price') === '') {
+                $errors['total_price'] = '公開するには支払総額の入力、または「価格応談」の指定が必要です。';
             }
             if (self::str($input, 'model_year') === '') {
                 $errors['model_year'] = '公開するには年式の入力が必要です。';
