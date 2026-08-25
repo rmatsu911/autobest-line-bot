@@ -111,6 +111,7 @@ $suites = [
     ['flex_richmenu_test.php',     'Flex・リッチメニューの組み立て',   true],
     ['webhook_inventory_test.php', '在庫カルーセルとキーワード応答',   true],
     ['notify_test.php',            '新着のお知らせ（reply方式）',      true],
+    ['queue_worker_test.php',       'キュー処理とcronワーカー',         true],
     ['form_admin_test.php',        '申込フォームと管理画面（HTTP）',   true],
 ];
 
