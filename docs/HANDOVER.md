@@ -5,8 +5,10 @@
 どちらも、知らずに書くと動くコードを書いたつもりで壊れる類のもの。
 
 - リポジトリ: `rmatsu911/autobest-line-bot`（Private）
-- 作業ブランチ: `claude/new-session-v1z7i9`
-- 直近のコミット: `bc987d0`
+- 作業ブランチ: `claude/new-session-v1z7i9`（`main` にはまだマージしていない）
+
+この文書のURL:
+<https://github.com/rmatsu911/autobest-line-bot/blob/claude/new-session-v1z7i9/docs/HANDOVER.md>
 
 ---
 
