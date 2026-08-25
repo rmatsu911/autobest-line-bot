@@ -10,38 +10,6 @@ declare(strict_types=1);
 
 namespace App;
 
-/** API 応答をまとめた値オブジェクト */
-final class LineResponse
-{
-    public int $status;
-    public ?array $json;
-    public string $body;
-    public ?string $error;
-
-    public function __construct(int $status, ?array $json, string $body, ?string $error = null)
-    {
-        $this->status = $status;
-        $this->json = $json;
-        $this->body = $body;
-        $this->error = $error;
-    }
-
-    public function ok(): bool
-    {
-        return $this->error === null && $this->status >= 200 && $this->status < 300;
-    }
-
-    /**
-     * 時間をおいて再送する価値があるか。
-     * 429（レート制限）と 5xx は一時的な失敗なのでリトライ対象。
-     * 400 番台の大半は内容不備なので、何度送っても通らない＝リトライしない。
-     */
-    public function retryable(): bool
-    {
-        return $this->error !== null || $this->status === 429 || $this->status >= 500;
-    }
-}
-
 final class LineClient
 {
     private const ENDPOINT = 'https://api.line.me';

@@ -39,6 +39,12 @@ function errorResponse(int $status, string $message): LineResponse {
     return new LineResponse($status, ['message' => $message], json_encode(['message' => $message], JSON_UNESCAPED_UNICODE) ?: '');
 }
 
+echo "\n== 前提 ==\n";
+// MessageQueue は「senderは LineResponse を返すこと」を約束事にしている。
+// LineClient を読み込まずに LineResponse を使う呼び出し側があり得るので、
+// 単体でオートロードできることを保証する（できないと sender が必ず失敗する）。
+check('LineResponse を単体でオートロードできる', class_exists(LineResponse::class, true));
+
 echo "\n== enqueue ==\n";
 clearQueue();
 $id = MessageQueue::enqueue('push', [

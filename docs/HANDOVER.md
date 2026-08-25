@@ -52,7 +52,8 @@ LINEのトークから在庫を探し、査定を申し込み、来店を予約�
 | 3 | 在庫カルーセル（Flex）・リッチメニュー定義 | 完了 |
 | 4 | 査定申込／来店予約フォーム・問い合わせ管理・操作履歴 | 完了 |
 | 5 | 新着のお知らせ（reply方式） | 完了 |
-| 5 | **cronバッチ（キュー処理・一斉配信）** | **未着手 ← 次はここ** |
+| 5 | キュー処理のcron（`MessageQueue` / `bin/queue_worker.php`） | 完了 |
+| 5 | **一斉配信（`bin/broadcast.php`）と通数の歯止め** | **未着手 ← 次はここ** |
 
 ### ディレクトリの読み方
 
@@ -113,7 +114,7 @@ php bin/healthcheck.php     # 設置確認（LINE APIの項目だけNGになる�
 php tests/run.php
 ```
 
-これだけで **361件** が走る。DBの作り直し、種データ投入、
+これだけで **388件** が走る。DBの作り直し、種データ投入、
 ビルトインサーバの起動まで全部やる。**変更したら必ずこれを通してから出すこと。**
 
 MySQLでも同じものを走らせられる。
@@ -138,6 +139,7 @@ TEST_DSN="mysql:host=127.0.0.1;dbname=ab_test;charset=utf8mb4" \
 | `flex_richmenu_test.php` | FlexのJSON妥当性、リッチメニューの座標とラベル長 |
 | `webhook_inventory_test.php` | 在庫カルーセル、ページング、お気に入り、未公開在庫が漏れないこと |
 | `notify_test.php` | 新着のお知らせ、条件の保存、**pushを呼んでいないこと** |
+| `queue_worker_test.php` | キューの積み込み、リトライと上限、stale復旧、不正payload |
 | `form_admin_test.php` | 実際にHTTPを通す結合テスト。フォーム送信、XSS、CSRF、写真の配信制限、削除 |
 
 ### テストを書き足すときの注意
@@ -156,67 +158,70 @@ TEST_DSN="mysql:host=127.0.0.1;dbname=ab_test;charset=utf8mb4" \
 
 ## 6. 次にやること（フェーズ5の残り）
 
-### 6-1. キュー処理のcron（`bin/queue_worker.php`）
+### 6-1. キュー処理のcron … 実装済み
 
-**なぜ要るか**
-Webhookは3秒以内に200を返さないとLINEが再送してくる。
-時間のかかる処理（画像の取得、複数人への送信、外部への通知）を
-Webhookの中でやると間に合わない。
-だから「やることをDBに積んで、cronが後で片付ける」形にする。
-
-**表はもうある**（`message_queue`）。
-
-```
-id / type / payload(JSON) / status(pending|processing|done|failed)
-attempts / last_error / retry_key / scheduled_at / created_at / updated_at
-```
-
-**作るもの**
-
-```
-bin/queue_worker.php     … pendingを拾って処理する。cronで1分ごとに叩く
-src/MessageQueue.php     … enqueue() と、ワーカーが使う取得・完了・失敗の記録
-```
-
-**満たすこと**
-
-1. **多重起動を防ぐ。** cronは前回が終わる前でも次を起動する。
-   ロックファイル（`flock`）で1本に絞る。`.gitignore` に `*.lock` は既にある。
-2. **1回の実行に上限を設ける。** 件数と経過時間の両方で切る
-   （例：50件または50秒で打ち切り、残りは次のcronへ）。PHPの実行時間制限に当てるため。
-3. **`processing` のまま放置された行を拾い直す。** 途中で落ちるとその状態で残る。
-   `updated_at` が一定時間より古い `processing` は `pending` に戻す。
-4. **リトライは回数上限を決めて指数的に間隔を空ける。**
-   `LineResponse::retryable()` が既にある（429と5xxだけリトライ、4xxはしない）。
-   上限に達したら `failed` にして `last_error` を残す。**黙って消さない。**
-5. **`retry_key` を使う。** LINEのAPIは `X-Line-Retry-Key` で二重送信を防げる。
-   `LineClient::push()` などが引数で受け取るようになっている。
-6. **通数を消費する処理は、実行前に見積もりを出す。** 下の 6-2 と同じ理由。
-
-**cronの登録例**（エックスサーバーのサーバーパネル）
+`src/MessageQueue.php` と `bin/queue_worker.php` が入っている。
+`enqueue()` で積み、cronが `work()` で少しずつ片付ける。
+多重起動は `flock`、1回の上限は件数と秒数の両方、`processing` のまま
+止まった行は `releaseStale()` が拾い直す。リトライは指数バックオフで最大5回。
 
 ```
 * * * * * cd /home/xxx/apps/autobest-line-bot && php bin/queue_worker.php >> storage/logs/cron.log 2>&1
 ```
 
-### 6-2. 一斉配信（`bin/broadcast.php`）
+**まだ誰も `enqueue()` を呼んでいない。** 次の 6-2 が最初の利用者になる。
 
-**先に読むこと**
-無料プランは**月200通**。`broadcast` は友だち全員に送るので、
-友だち150人なら1回で150通、つまり月に1回しか送れない。
-**この機能は「作ってあるが、使うと枠を使い切る」ものになる。**
-だから次を必ず入れること。
+**同時実行について（把握済みの挙動）**
+`bin/queue_worker.php` は `flock` で1本に絞っているので通常は問題ない。
+ただし `MessageQueue::work()` を管理画面（Webリクエスト）から直接呼ぶと、
+cronと重なったときに **SQLiteでは `database is locked` の例外**が出る
+（MySQLでは正しく1つのワーカーだけが行を確保する。実測で確認済み）。
+管理画面に「今すぐ送信」を付けるなら、その場で送らずに `enqueue()` するだけにして、
+実際の送信はcronに任せること。
 
-1. **送信前に残り通数を確認する。**
-   `GET https://api.line.me/v2/bot/message/quota` と
-   `GET https://api.line.me/v2/bot/message/quota/consumption` で取れる。
+### 6-2. 一斉配信と通数の歯止め ← 次はここ
+
+**先に必ず読むこと。ここが今いちばん危ない箇所。**
+
+無料プランは**月200通**。そして現状の `MessageQueue::work()` には
+**通数の歯止めが一切入っていない。** 実測すると次のようになる。
+
+```
+push 60件 + broadcast 1件（宛先150人）をキューに積む
+→ 送信API 61回、消費 210通。警告も中断もなし
+```
+
+`MessageQueue::estimateConsumption()` が消費見込みを計算しているが、
+**結果はログに出しているだけで、判断には使っていない。**
+名前から「守られている」と誤解しやすいので注意。
+
+**やること**
+
+1. **`src/LineClient.php` に残り通数を取る口を足す。**
+   ```
+   GET https://api.line.me/v2/bot/message/quota              → {"type":"limited","value":200}
+   GET https://api.line.me/v2/bot/message/quota/consumption   → {"totalUsage":123}
+   ```
    `LineClient::httpGet()` がそのまま使える。
-2. **残りが足りなければ送らずに止める。** 中途半端に送るのが一番まずい。
-3. **管理画面から送る場合は、送信前に「この配信で◯通消費します。残り◯通です」と出して確認させる。**
-4. `multicast` は1リクエスト500件まで。分割とレート制御は呼び出し側の責務
-   （`LineClient::multicast()` のコメントにもそう書いてある）。
-5. 配信の実行は `message_queue` に積んでワーカーに任せる。
-   管理画面のリクエストの中で送り切ろうとしない（時間切れになる）。
+   `type` が `"none"`（無制限）のときは上限なしとして扱う。
+
+2. **`MessageQueue::work()` の送信前に残量を見て、足りなければ送らない。**
+   - `estimateConsumption()` の値が残量を超えるなら、その行は送らずに
+     **`pending` のまま次回へ回す**（`failed` にしない。枠が戻る翌月に送れるため）。
+   - 残量の取得はcron 1回につき1度でよい（毎行APIを叩かない）。送った分は手元で引く。
+   - APIが取れなかったときは**送らない側に倒す**。数えられないまま送るのが一番まずい。
+   - 止めたことは必ず `Logger::warning` に残し、ワーカーの標準出力にも出す。
+
+3. **`bin/broadcast.php` は「積むだけ」にする。**
+   その場で送らない（PHPの実行時間に引っかかる）。
+   `multicast` は1リクエスト500件までなので、宛先を500人ずつに割ってから積む。
+
+4. **管理画面から配信する場合は、積む前に確認画面を出す。**
+   「この配信で◯通消費します。今月の残りは◯通です」を見せて、押させてから積む。
+
+5. **テストを足す。** 残量が足りないときに
+   **送信APIが呼ばれないこと**と、行が `pending` のまま残ることを確かめる。
+   `queue_worker_test.php` の書き方に合わせればよい。
 
 ### 6-3. 「準備中」のまま残っている導線
 
@@ -333,6 +338,12 @@ MySQLは 1292 で拒否、SQLiteは黙って空文字を保存する。どちら
 **SQLiteのファイルを消したら、そのプロセスのPDOハンドルは捨てる。**
 消えた方のinodeを掴んだままになり、書き込みが `no such table` で落ちる。
 `tests/run.php` はDBを作り直すたびに別プロセスへ逃がしている。
+
+**クラス名とファイル名を一致させる。**
+`config/config.php` のオートローダは `App\Xxx` を `src/Xxx.php` に対応させるだけ。
+`LineResponse` を `LineClient.php` の中に置いていたため、
+`LineClient` を先に読まない限り `Class "App\LineResponse" not found` で落ちていた。
+`src/LineResponse.php` に分けて解消済み。**1ファイル1クラスにすること。**
 
 ### Webhook関連
 
