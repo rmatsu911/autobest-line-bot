@@ -48,6 +48,7 @@ try {
         . ' succeeded=' . $summary['succeeded']
         . ' retried=' . $summary['retried']
         . ' failed=' . $summary['failed']
+        . ' quota_blocked=' . $summary['quota_blocked']
         . ' stale_requeued=' . $summary['stale_requeued']
         . ' elapsed=' . $summary['elapsed_seconds'] . "s\n";
     exit(0);

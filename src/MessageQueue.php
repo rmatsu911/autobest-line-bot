@@ -125,18 +125,31 @@ final class MessageQueue
         ?callable $sender = null,
         int $maxItems = self::DEFAULT_MAX_ITEMS,
         int $maxSeconds = self::DEFAULT_MAX_SECONDS,
-        int $staleMinutes = self::STALE_MINUTES
+        int $staleMinutes = self::STALE_MINUTES,
+        ?callable $quotaProvider = null
     ): array {
         $maxItems = max(1, min($maxItems, 200));
         $maxSeconds = max(1, min($maxSeconds, 55));
         $started = microtime(true);
-        $sender ??= self::defaultSender();
+
+        $line = new LineClient();
+        $sender ??= self::defaultSender($line);
+        $quotaProvider ??= self::defaultQuotaProvider($line);
+        $quotaBudget = [
+            'loaded' => false,
+            'available' => false,
+            'unlimited' => false,
+            'remaining' => 0,
+            'limit' => null,
+            'used' => null,
+        ];
 
         $summary = [
             'processed' => 0,
             'succeeded' => 0,
             'retried' => 0,
             'failed' => 0,
+            'quota_blocked' => 0,
             'stale_requeued' => self::releaseStale($staleMinutes),
             'elapsed_seconds' => 0.0,
         ];
@@ -151,9 +164,13 @@ final class MessageQueue
                 break;
             }
 
-            $result = self::processRow($rows[0], $sender);
+            $result = self::processRow($rows[0], $sender, $quotaProvider, $quotaBudget);
             $summary['processed']++;
             $summary[$result]++;
+
+            if ($result === 'quota_blocked') {
+                break;
+            }
         }
 
         $summary['elapsed_seconds'] = round(microtime(true) - $started, 3);
@@ -163,8 +180,10 @@ final class MessageQueue
     /**
      * @param array<string,mixed> $row
      * @param callable $sender
+     * @param callable $quotaProvider
+     * @param array<string,mixed> $quotaBudget
      */
-    private static function processRow(array $row, callable $sender): string
+    private static function processRow(array $row, callable $sender, callable $quotaProvider, array &$quotaBudget): string
     {
         try {
             $payload = self::decodePayload($row);
@@ -173,6 +192,10 @@ final class MessageQueue
 
             self::validatePayload($type, $payload);
             $estimate = self::estimateConsumption($type, $payload);
+            if (!self::reserveQuota($row, $type, $estimate, $quotaProvider, $quotaBudget)) {
+                return 'quota_blocked';
+            }
+
             Logger::info('キューのメッセージを送信します', [
                 'queue_id' => (int) $row['id'],
                 'type' => $type,
@@ -200,6 +223,141 @@ final class MessageQueue
         }
 
         return self::recordFailure($row, self::responseError($response), $response->retryable());
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     * @param callable $quotaProvider
+     * @param array<string,mixed> $quotaBudget
+     */
+    private static function reserveQuota(
+        array $row,
+        string $type,
+        int $estimate,
+        callable $quotaProvider,
+        array &$quotaBudget
+    ): bool {
+        if ($estimate <= 0) {
+            return true;
+        }
+
+        if (!$quotaBudget['loaded']) {
+            $quotaBudget = self::loadQuotaBudget($quotaProvider);
+        }
+
+        if (!$quotaBudget['available']) {
+            self::deferForQuota($row, 'LINE通数の残量を取得できないため送信を見送りました');
+            Logger::warning('LINE通数の残量を取得できないためキュー送信を止めました', [
+                'queue_id' => (int) $row['id'],
+                'type' => $type,
+                'estimated_messages' => $estimate,
+            ]);
+            return false;
+        }
+
+        if ($quotaBudget['unlimited']) {
+            return true;
+        }
+
+        $remaining = max(0, (int) $quotaBudget['remaining']);
+        if ($estimate > $remaining) {
+            self::deferForQuota(
+                $row,
+                sprintf('LINE通数の残量不足のため送信を見送りました（必要:%d / 残り:%d）', $estimate, $remaining)
+            );
+            Logger::warning('LINE通数の残量不足のためキュー送信を止めました', [
+                'queue_id' => (int) $row['id'],
+                'type' => $type,
+                'estimated_messages' => $estimate,
+                'remaining_messages' => $remaining,
+                'monthly_limit' => $quotaBudget['limit'],
+                'monthly_used' => $quotaBudget['used'],
+            ]);
+            return false;
+        }
+
+        // APIの失敗時に実際の消費有無を判定できないので、送る直前に保守的に差し引く。
+        $quotaBudget['remaining'] = $remaining - $estimate;
+        return true;
+    }
+
+    /**
+     * @param callable $quotaProvider
+     * @return array{loaded:bool,available:bool,unlimited:bool,remaining:int,limit:?int,used:?int}
+     */
+    private static function loadQuotaBudget(callable $quotaProvider): array
+    {
+        try {
+            $status = $quotaProvider();
+        } catch (\Throwable $e) {
+            Logger::warning('LINE通数の残量取得で例外が発生しました', ['message' => $e->getMessage()]);
+            return [
+                'loaded' => true,
+                'available' => false,
+                'unlimited' => false,
+                'remaining' => 0,
+                'limit' => null,
+                'used' => null,
+            ];
+        }
+
+        if (!is_array($status)) {
+            return [
+                'loaded' => true,
+                'available' => false,
+                'unlimited' => false,
+                'remaining' => 0,
+                'limit' => null,
+                'used' => null,
+            ];
+        }
+
+        if (($status['limited'] ?? true) === false) {
+            return [
+                'loaded' => true,
+                'available' => true,
+                'unlimited' => true,
+                'remaining' => 0,
+                'limit' => null,
+                'used' => isset($status['used']) ? (int) $status['used'] : null,
+            ];
+        }
+
+        if (!array_key_exists('remaining', $status) || $status['remaining'] === null) {
+            return [
+                'loaded' => true,
+                'available' => false,
+                'unlimited' => false,
+                'remaining' => 0,
+                'limit' => null,
+                'used' => null,
+            ];
+        }
+
+        return [
+            'loaded' => true,
+            'available' => true,
+            'unlimited' => false,
+            'remaining' => max(0, (int) $status['remaining']),
+            'limit' => isset($status['limit']) ? (int) $status['limit'] : null,
+            'used' => isset($status['used']) ? (int) $status['used'] : null,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $row
+     */
+    private static function deferForQuota(array $row, string $message): void
+    {
+        Db::exec(
+            'UPDATE message_queue
+                SET status = ?,
+                    attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                    last_error = ?,
+                    updated_at = ' . Db::nowSql() . '
+              WHERE id = ?',
+            ['pending', $message, (int) $row['id']]
+        );
     }
 
     private static function markDone(int $id): void
@@ -284,10 +442,8 @@ final class MessageQueue
         };
     }
 
-    private static function defaultSender(): callable
+    private static function defaultSender(LineClient $line): callable
     {
-        $line = new LineClient();
-
         return static function (string $type, array $payload, string $retryKey) use ($line): LineResponse {
             return match ($type) {
                 'push' => $line->push(
@@ -312,6 +468,11 @@ final class MessageQueue
                 default => throw new \InvalidArgumentException('未対応のキュー種別です: ' . $type),
             };
         };
+    }
+
+    private static function defaultQuotaProvider(LineClient $line): callable
+    {
+        return static fn(): ?array => $line->messageQuotaStatus();
     }
 
     /**

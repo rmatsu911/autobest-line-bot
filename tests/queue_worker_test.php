@@ -39,6 +39,19 @@ function errorResponse(int $status, string $message): LineResponse {
     return new LineResponse($status, ['message' => $message], json_encode(['message' => $message], JSON_UNESCAPED_UNICODE) ?: '');
 }
 
+function unlimitedQuota(): callable {
+    return static fn(): array => ['limited' => false, 'limit' => null, 'used' => 0, 'remaining' => null];
+}
+
+function limitedQuota(int $remaining, int $limit = 200): callable {
+    return static fn(): array => [
+        'limited' => true,
+        'limit' => $limit,
+        'used' => max(0, $limit - $remaining),
+        'remaining' => $remaining,
+    ];
+}
+
 echo "\n== 前提 ==\n";
 // MessageQueue は「senderは LineResponse を返すこと」を約束事にしている。
 // LineClient を読み込まずに LineResponse を使う呼び出し側があり得るので、
@@ -69,7 +82,9 @@ $summary = MessageQueue::work(
         return okResponse();
     },
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 $saved = row($id);
 check('1件処理する', $summary['processed'] === 1);
@@ -87,7 +102,9 @@ $id = MessageQueue::enqueue('push', [
 $summary = MessageQueue::work(
     static fn(string $type, array $payload, string $retryKey): LineResponse => errorResponse(429, 'Too many requests'),
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 $saved = row($id);
 check('429はpendingに戻す', ($saved['status'] ?? '') === 'pending');
@@ -103,7 +120,9 @@ Db::exec(
 $summary = MessageQueue::work(
     static fn(string $type, array $payload, string $retryKey): LineResponse => errorResponse(500, 'Server error'),
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 $saved = row($id);
 check('上限到達でfailedにする', ($saved['status'] ?? '') === 'failed');
@@ -119,7 +138,9 @@ $id400 = MessageQueue::enqueue('push', [
 MessageQueue::work(
     static fn(string $type, array $payload, string $retryKey): LineResponse => errorResponse(400, 'Bad request'),
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 check('400は再試行しない', (row($id400)['status'] ?? '') === 'failed');
 
@@ -131,7 +152,9 @@ MessageQueue::work(
         return okResponse();
     },
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 check('不正payloadはsenderを呼ばない', !$called);
 check('不正payloadはfailedにする', (row($invalid)['status'] ?? '') === 'failed');
@@ -162,7 +185,9 @@ $future = MessageQueue::enqueue(
 $summary = MessageQueue::work(
     static fn(string $type, array $payload, string $retryKey): LineResponse => okResponse(),
     1,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 check('maxItemsで1件だけ処理する', $summary['processed'] === 1);
 $statuses = [row($a)['status'] ?? '', row($b)['status'] ?? '', row($future)['status'] ?? ''];
@@ -185,7 +210,9 @@ MessageQueue::work(
         return okResponse();
     },
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 check('multicastを処理できる', (row($multi)['status'] ?? '') === 'done');
 check('broadcastを処理できる', (row($broadcast)['status'] ?? '') === 'done');
@@ -197,9 +224,85 @@ $badBroadcast = MessageQueue::enqueue('broadcast', [
 MessageQueue::work(
     static fn(string $type, array $payload, string $retryKey): LineResponse => okResponse(),
     10,
-    10
+    10,
+    MessageQueue::STALE_MINUTES,
+    unlimitedQuota()
 );
 check('broadcastは見積もりなしで送らない', (row($badBroadcast)['status'] ?? '') === 'failed');
+
+echo "\n== 通数の歯止め ==\n";
+clearQueue();
+$multi = MessageQueue::enqueue('multicast', [
+    'to' => ['U00000000000000000000000000000001', 'U00000000000000000000000000000002'],
+    'messages' => [LineClient::text('2通分')],
+]);
+$push = MessageQueue::enqueue('push', [
+    'to' => 'U00000000000000000000000000000003',
+    'messages' => [LineClient::text('残量不足')],
+]);
+$sent = [];
+$quotaCalls = 0;
+$summary = MessageQueue::work(
+    static function (string $type, array $payload, string $retryKey) use (&$sent): LineResponse {
+        $sent[] = $type;
+        return okResponse();
+    },
+    10,
+    10,
+    MessageQueue::STALE_MINUTES,
+    static function () use (&$quotaCalls): array {
+        $quotaCalls++;
+        return ['limited' => true, 'limit' => 200, 'used' => 198, 'remaining' => 2];
+    }
+);
+check('残量取得はcron 1回につき1度', $quotaCalls === 1, '回数=' . $quotaCalls);
+check('残量内のmulticastだけ送る', $sent === ['multicast']);
+check('残量不足の行はpendingのまま', (row($push)['status'] ?? '') === 'pending');
+check('送っていない行のattemptsは増やさない', (int) (row($push)['attempts'] ?? -1) === 0);
+check('quota_blockedを数える', $summary['quota_blocked'] === 1);
+check('送れた行はdone', (row($multi)['status'] ?? '') === 'done');
+
+clearQueue();
+$broadcast = MessageQueue::enqueue('broadcast', [
+    'messages' => [LineClient::text('多すぎる配信')],
+    'estimated_recipients' => 210,
+]);
+$called = false;
+$summary = MessageQueue::work(
+    static function () use (&$called): LineResponse {
+        $called = true;
+        return okResponse();
+    },
+    10,
+    10,
+    MessageQueue::STALE_MINUTES,
+    limitedQuota(200)
+);
+check('見込みが残量を超えるbroadcastは送らない', !$called);
+check('broadcastもpendingに戻す', (row($broadcast)['status'] ?? '') === 'pending');
+check('残量不足の理由を残す', str_contains((string) (row($broadcast)['last_error'] ?? ''), '残量不足'));
+check('broadcastのattemptsも増やさない', (int) (row($broadcast)['attempts'] ?? -1) === 0);
+check('broadcastのquota_blockedを数える', $summary['quota_blocked'] === 1);
+
+clearQueue();
+$push = MessageQueue::enqueue('push', [
+    'to' => 'U00000000000000000000000000000004',
+    'messages' => [LineClient::text('残量不明')],
+]);
+$called = false;
+MessageQueue::work(
+    static function () use (&$called): LineResponse {
+        $called = true;
+        return okResponse();
+    },
+    10,
+    10,
+    MessageQueue::STALE_MINUTES,
+    static fn(): ?array => null
+);
+check('残量が取れないときは送らない', !$called);
+check('残量不明でもpendingに戻す', (row($push)['status'] ?? '') === 'pending');
+check('残量不明の理由を残す', str_contains((string) (row($push)['last_error'] ?? ''), '残量を取得できない'));
 
 echo "\n" . str_repeat('-', 46) . "\n";
 echo "成功 {$pass} / 失敗 {$fail}\n\n";

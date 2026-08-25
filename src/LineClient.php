@@ -67,6 +67,48 @@ final class LineClient
         ], $retryKey);
     }
 
+    /**
+     * 今月のメッセージ通数の残量を取る。
+     *
+     * @return array{limited:bool,limit:?int,used:int,remaining:?int}|null
+     */
+    public function messageQuotaStatus(): ?array
+    {
+        $quota = $this->request('GET', '/v2/bot/message/quota');
+        if (!$quota->ok() || !is_array($quota->json)) {
+            return null;
+        }
+
+        $type = (string) ($quota->json['type'] ?? '');
+        if ($type === 'none') {
+            return [
+                'limited' => false,
+                'limit' => null,
+                'used' => 0,
+                'remaining' => null,
+            ];
+        }
+
+        if ($type !== 'limited' || !isset($quota->json['value'])) {
+            return null;
+        }
+
+        $consumption = $this->request('GET', '/v2/bot/message/quota/consumption');
+        if (!$consumption->ok() || !is_array($consumption->json) || !isset($consumption->json['totalUsage'])) {
+            return null;
+        }
+
+        $limit = max(0, (int) $quota->json['value']);
+        $used = max(0, (int) $consumption->json['totalUsage']);
+
+        return [
+            'limited' => true,
+            'limit' => $limit,
+            'used' => $used,
+            'remaining' => max(0, $limit - $used),
+        ];
+    }
+
     // -------------------------------------------------------------------------
     // プロフィール
     // -------------------------------------------------------------------------
