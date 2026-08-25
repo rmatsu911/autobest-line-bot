@@ -53,7 +53,9 @@ final class RichMenuDefinition
                 self::gridAreas([
                     ['postback', 'action=cars&page=1',            '販売在庫を探す'],
                     ['postback', 'action=search_menu',            '条件から検索'],
-                    ['postback', 'action=cars&page=1&sort=new',   '新着入庫'],
+                    // 条件を登録している人にはその条件に合う新着、未登録なら全体の新着。
+                    // 自動配信をしない代わりに、ここが新着の入口になる。
+                    ['postback', 'action=new_arrivals',           '新着入庫'],
                     ['postback', 'action=favorites',              'お気に入り'],
                     ['postback', 'action=reserve',                '来店・商談予約'],
                     ['postback', 'action=stores',                 '福岡・神奈川の店舗'],

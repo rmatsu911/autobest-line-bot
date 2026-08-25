@@ -197,6 +197,16 @@ final class WebhookHandler
             ];
         }
 
+        // 「新着」「通知」は在庫の判定より前に見る。
+        // 後ろに置くと「新着在庫ある？」が「在庫」に先に拾われ、
+        // その人の条件に合った新着ではなく通常の一覧が出てしまう。
+        if ($matches(['通知', 'つうち', 'おしらせ', 'お知らせ'])) {
+            return $this->notifySettings($this->currentUserId);
+        }
+        if ($matches(['新着', 'しんちゃく', '新しい', 'あたらしい', '入荷', 'にゅうか', '入庫'])) {
+            return $this->newArrivals($this->currentUserId);
+        }
+
         // 在庫系のことばは、案内文ではなく実際のカルーセルを返す。
         // 「メニューから選んでください」と一段挟むと離脱するため。
         // 車種そのものを挙げる人も在庫を探している。
@@ -293,9 +303,14 @@ final class WebhookHandler
             'assessment'      => [$this->assessmentGuide()],
             'reserve'         => [$this->reserveGuide((int) ($params['car_id'] ?? 0))],
             'inquiry'         => [$this->inquiryGuide((int) ($params['car_id'] ?? 0))],
+            // 新着のお知らせ。自動配信ではなく、押されたときにその人向けの新着を返す。
+            'new_arrivals'    => $this->newArrivals($lineUserId),
+            'notify_settings' => $this->notifySettings($lineUserId),
+            'notify_set'      => $this->notifySet($lineUserId, $params),
+            'notify_clear'    => $this->notifyClear($lineUserId),
             // フェーズ5で実装する導線。今は準備中と明示して黙って落とさない。
             'contact', 'consult',
-            'my_reservations', 'notify_settings', 'purchases',
+            'my_reservations', 'purchases',
             'why_us', 'flow', 'documents' => [LineClient::text(
                 "ただいま準備中の機能です。\nお手数ですが、このトークにメッセージを送っていただくか、お電話（"
                 . Config::get('SHOP_TEL', '') . "）でお問い合わせください。担当者が確認してご返信します。"
@@ -349,6 +364,182 @@ final class WebhookHandler
             '来店・商談を予約する',
             FlexBuilder::reserveUrl($carId)
         );
+    }
+
+    /**
+     * その人向けの新着。
+     *
+     * 無料プランの200通を使い切らないよう、自動配信はしない。
+     * 条件を覚えておいて、押されたときに reply で返す（reply は通数に入らない）。
+     *
+     * 条件が未設定の人には全体の新着をそのまま見せる。
+     * 「まず押してみたら空だった」で終わらせないため。
+     *
+     * @return array<int,array>
+     */
+    private function newArrivals(string $lineUserId): array
+    {
+        $userRowId = $this->userRowId($lineUserId);
+        if ($userRowId === null) {
+            // 友だち追加の記録が無いときは、条件なしの新着一覧で代替する。
+            return $this->carsCarousel(['page' => 1, 'sort' => 'new']);
+        }
+
+        if (!NotificationRepository::hasCondition($userRowId)) {
+            return $this->carsCarousel(['page' => 1, 'sort' => 'new']);
+        }
+
+        $result = NotificationRepository::newArrivals($userRowId);
+        $row    = NotificationRepository::conditionFor($userRowId);
+        $cond   = NotificationRepository::conditionText($row);
+
+        if ($result['rows'] === []) {
+            return [LineClient::text(
+                "いまのところ、ご登録の条件に合う新着はありません。\n条件：{$cond}\n新しく入庫したらここでお知らせします。",
+                LineClient::quickReply([
+                    ['label' => '条件を変える',   'data' => 'action=notify_settings'],
+                    ['label' => 'すべての在庫',   'data' => 'action=cars&page=1'],
+                    ['label' => '全体の新着',     'data' => 'action=cars&page=1&sort=new'],
+                ])
+            )];
+        }
+
+        // 見せた分だけを記録する。次ページ判定用に多く取った1件は含めない。
+        NotificationRepository::markSeen(
+            $userRowId,
+            array_map(static fn (array $car): int => (int) $car['id'], $result['rows'])
+        );
+
+        $messages = [LineClient::text("ご登録の条件（{$cond}）に合う新着です。")];
+        // 「もっと見る」は同じactionでよい。今見せた分は記録済みなので、次は続きが出る。
+        $messages[] = FlexBuilder::carousel($result['rows'], 1, false, '');
+
+        if ($result['hasNext']) {
+            $messages[] = LineClient::text('続きもあります。',
+                LineClient::quickReply([
+                    ['label' => '続きを見る',   'data' => 'action=new_arrivals'],
+                    ['label' => '条件を変える', 'data' => 'action=notify_settings'],
+                ]));
+        }
+
+        return $messages;
+    }
+
+    /**
+     * 新着のお知らせ設定。
+     *
+     * 「自動で送らない」ことを必ず書く。黙って押し待ちにすると
+     * 「登録したのに通知が来ない」という問い合わせを生むため。
+     *
+     * @return array<int,array>
+     */
+    private function notifySettings(string $lineUserId): array
+    {
+        $userRowId = $this->userRowId($lineUserId);
+        $row       = $userRowId === null ? null : NotificationRepository::conditionFor($userRowId);
+        $cond      = NotificationRepository::conditionText($row);
+
+        $text = "【新着のお知らせ設定】\n"
+              . "いまの条件：{$cond}\n\n"
+              . "条件に合う新しい在庫が入ったら、メニューの「新着入庫」からご覧いただけます。\n"
+              . "下のボタンで条件を変えられます。";
+
+        return [LineClient::text($text, LineClient::quickReply([
+            ['label' => '新着を見る',       'data' => 'action=new_arrivals'],
+            ['label' => '乗用車・軽',       'data' => 'action=notify_set&category=passenger'],
+            ['label' => 'トラック・バス',   'data' => 'action=notify_set&category=truck'],
+            ['label' => '重機・作業車',     'data' => 'action=notify_set&category=machinery'],
+            ['label' => 'その他車両',       'data' => 'action=notify_set&category=other'],
+            ['label' => '車種の指定なし',   'data' => 'action=notify_set&category='],
+            ['label' => '福岡本社',         'data' => 'action=notify_set&location=fukuoka'],
+            ['label' => '神奈川支店',       'data' => 'action=notify_set&location=kanagawa'],
+            ['label' => '拠点の指定なし',   'data' => 'action=notify_set&location='],
+            ['label' => '100万円以下',      'data' => 'action=notify_set&price_max=1000000'],
+            ['label' => '300万円以下',      'data' => 'action=notify_set&price_max=3000000'],
+            ['label' => '予算の指定なし',   'data' => 'action=notify_set&price_max='],
+            ['label' => '条件をすべて消す', 'data' => 'action=notify_clear'],
+        ]))];
+    }
+
+    /**
+     * 条件を1項目だけ変える。
+     *
+     * 値が空文字（例：action=notify_set&location=）なら、その項目を外す。
+     * isset() ではなく array_key_exists() で見るのは、
+     * 「指定なしにする」と「そもそも送られていない」を区別するため
+     * （parse_str は空文字を作るので isset は両方 true になる）。
+     *
+     * @return array<int,array>
+     */
+    private function notifySet(string $lineUserId, array $params): array
+    {
+        $userRowId = $this->userRowId($lineUserId);
+        if ($userRowId === null) {
+            return [LineClient::text('設定を保存できませんでした。お手数ですが、もう一度お試しください。')];
+        }
+
+        $changes = [];
+        foreach (['category', 'location', 'price_max'] as $key) {
+            if (!array_key_exists($key, $params)) {
+                continue;
+            }
+            $value = (string) $params[$key];
+
+            // 選択肢の偽装を弾く。ここを通す値だけがDBに入る。
+            if ($key === 'category' && $value !== '' && !in_array($value, CarValidator::CATEGORIES, true)) {
+                continue;
+            }
+            if ($key === 'location' && $value !== '' && !in_array($value, CarValidator::LOCATIONS, true)) {
+                continue;
+            }
+            if ($key === 'price_max' && $value !== '' && !ctype_digit($value)) {
+                continue;
+            }
+            $changes[$key] = $value;
+        }
+
+        if ($changes === []) {
+            return $this->notifySettings($lineUserId);
+        }
+
+        NotificationRepository::updateCondition($userRowId, $changes);
+
+        $cond = NotificationRepository::conditionText(NotificationRepository::conditionFor($userRowId));
+
+        return [LineClient::text(
+            "条件を保存しました。\n条件：{$cond}",
+            LineClient::quickReply([
+                ['label' => '新着を見る',   'data' => 'action=new_arrivals'],
+                ['label' => '条件を変える', 'data' => 'action=notify_settings'],
+            ])
+        )];
+    }
+
+    /** @return array<int,array> */
+    private function notifyClear(string $lineUserId): array
+    {
+        $userRowId = $this->userRowId($lineUserId);
+        if ($userRowId !== null) {
+            NotificationRepository::clearCondition($userRowId);
+        }
+
+        return [LineClient::text(
+            "条件を消しました。これからは全体の新着をお見せします。",
+            LineClient::quickReply([
+                ['label' => '新着を見る',   'data' => 'action=new_arrivals'],
+                ['label' => '条件を決める', 'data' => 'action=notify_settings'],
+            ])
+        )];
+    }
+
+    /** LINEのuserId から line_users.id を引く。無ければ null。 */
+    private function userRowId(string $lineUserId): ?int
+    {
+        if ($lineUserId === '') {
+            return null;
+        }
+        $row = Db::one('SELECT id FROM line_users WHERE line_user_id = ?', [$lineUserId]);
+        return $row === null ? null : (int) $row['id'];
     }
 
     /**
