@@ -27,3 +27,10 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# リッチメニュー画像の生成に使う道具（開発機でのみ使う。Xserverには不要）
+/node_modules/
+# 当たり判定の確認用に出す画像。登録には使わないのでコミットしない
+/bin/richmenu/*-overlay.png
+# 生成時にダウンロードするフォントの置き場
+/storage/tmp/fonts/

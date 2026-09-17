@@ -1,0 +1,13 @@
+{
+  "name": "autobest-line-bot-tools",
+  "private": true,
+  "type": "module",
+  "description": "リッチメニュー画像を作るための開発用ツール。サーバー（Xserver）には不要。",
+  "scripts": {
+    "richmenu": "node tools/richmenu/build.mjs",
+    "richmenu:overlay": "node tools/richmenu/build.mjs --overlay"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.1"
+  }
+}

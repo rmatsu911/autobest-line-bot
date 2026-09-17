@@ -399,9 +399,8 @@ Webhookは既に200を返し終えているので、`header()` は「headers alr
 - [ ] 管理画面のパスワードが `admin123`（8文字）のまま。`php bin/create_admin.php` で12文字以上に
 - [ ] `public/admin/.htaccess` のBasic認証がコメントアウトのまま
 - [ ] 外から `.env` / `src/` / `storage/` が読めないか未確認（`curl -i` で403か404になること）
-- [ ] リッチメニューの画像（`bin/richmenu/{find,sell,support}.png`、2500×1686）が未提供のため未登録
-      ※フェーズ5で「新着入庫」ボタンの遷移先を `action=new_arrivals` に変えたので、
-        登録済みの場合は `php bin/setup_richmenu.php --apply` で再登録が要る
+- [ ] リッチメニューの登録（画像は `bin/richmenu/` に用意済み）
+      `php bin/setup_richmenu.php` で内容を確認してから `--apply` で登録する
 
 ---
 
@@ -410,6 +409,9 @@ Webhookは既に200を返し終えているので、`header()` は「headers alr
 - 仕様を丸ごと把握したいなら `docs/BUILD_PROMPT.md`。
   このシステム一式を白紙から作るための仕様を1本にまとめてある
   （別案件の元にする、大きな機能追加の前提として読ませる、突き合わせに使う）。
+- リッチメニューを作り直すなら `docs/RICHMENU_PROMPT.md` と `tools/richmenu/README.md`。
+  画像と当たり判定がずれると「押しても反応しないメニュー」になるが、
+  登録は通ってしまうので気づきにくい。手順どおりにやること。
 - UIデザインの再現・拡張をするなら `docs/UI_PROMPT.md`。
   承認済みの配色（16進）と8画面の内容、そして**一度却下された方向**が書いてある。
 
