@@ -137,8 +137,12 @@ function buildHtml(alias, menu, faces) {
     const on = key === alias;
     const { x, y, width, height } = a.bounds;
     // 選択中のタブだけ上端まで伸ばし、残りは少し下げて「奥にある」ことを示す
-    const top = on ? y : y + 32;
-    const h = on ? height : height - 32;
+    // 3つとも上端で揃える。
+    // 非選択タブを下げて「奥にある」ことを示す案は、実際にLINEで表示すると
+    // 幅400px程度まで縮むため、段差が「意図しない余白」にしか見えなかった。
+    // 選択中かどうかは、地の色と上端の白い印だけで区別する。
+    const top = y;
+    const h = height;
     // 隙間は見た目だけ。当たり判定(bounds)は隙間なく敷き詰めてあるので、
     // 境目を押しても必ずどれかのタブが反応する。
     const gap = 5;
@@ -146,10 +150,11 @@ function buildHtml(alias, menu, faces) {
       <div style="position:absolute;left:${x + gap}px;top:${top}px;
                   width:${width - gap * 2}px;height:${h}px;
                   background:${on ? t.panel : '#DFDCD4'};
-                  border-radius:${on ? '30px 30px 0 0' : '26px 26px 0 0'};
+                  border-radius:0;
                   display:flex;align-items:center;justify-content:center;gap:26px;">
-        ${on ? `<div style="position:absolute;top:0;left:34%;right:34%;height:11px;
-                             background:#FFFFFF;border-radius:0 0 8px 8px;opacity:.9;"></div>` : ''}
+        ${'' /* 選択中を示す白い印は置かない。
+                上端で切れて「白い余白」に見えるうえ、地の色（テーマ色か #DFDCD4 か）
+                だけで十分に見分けがつく。 */}
         ${svg(icons[t.tabIcon](on ? '#16283F' : '#5A6069'), on ? 92 : 84)}
         <div>
           <div style="color:${on ? '#FFFFFF' : '#5A6069'};font-size:56px;font-weight:900;line-height:1.15;">${t.label}</div>
